@@ -79,7 +79,7 @@ for folder in folders:
         # Load REAR1
         path_rear1 = os.path.join(folder_path, "REAR1.mat")
         with h5py.File(path_rear1, 'r') as f:
-                    key2 = list(f.keys())[0]
+            key2 = list(f.keys())[0]
             eeg_rear1 = np.squeeze(f[key2][()])
 
         # Match length
@@ -119,7 +119,7 @@ for folder in folders:
                 if np.max(np.abs(seg)) > threshold_max or np.std(seg) < threshold_min_std:
                     continue
                 segments_rep.append(seg.astype(np.float32))
-                                features_rep.append(
+                features_rep.append(
                     np.concatenate([extract_features(seg[0]), extract_features(seg[1])])
                 )
                 labels_rep.append(1)

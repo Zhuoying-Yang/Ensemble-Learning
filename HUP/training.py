@@ -30,17 +30,22 @@ def free_memory():
 # ========================
 def report_model_stats(model, input_shape, name):
     model.eval()
+    
+    # Save first, while model is clean
+    model_path = f"{name}.pt"
+    torch.save(model.state_dict(), model_path)
+
+    # Now profile
     dummy_input = torch.randn(*input_shape).to(next(model.parameters()).device)
     flops, params = profile(model, inputs=(dummy_input,), verbose=False)
     flops, params = clever_format([flops, params], "%.3f")
-
-    model_path = f"{name}.pt"
-    torch.save(model.state_dict(), model_path)
     size_MB = os.path.getsize(model_path) / (1024 * 1024)
+
     print(f"\nModel Summary for {name}:")
     print(f"Saved File Size: {size_MB:.2f} MB")
     print(f"Total Parameters: {params}")
     print(f"FLOPs: {flops}")
+
 
 # ========================
 # Model Definitions

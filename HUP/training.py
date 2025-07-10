@@ -132,7 +132,7 @@ def predict_dl(model, X_tensor, batch_size=64):
 # Training Loop
 # ========================
 data_dir = "/home/zhuoying"
-version_suffixes = ["_v1", "_v2", "_v3", "_v4"]
+version_suffixes = ["v1", "v2", "v3", "v4"]
 model_types = ["CNN", "RNN", "ResNet", "RF"]
 test_data_all, test_labels_all = [], []
 val_labels_all, model_preds, model_val_preds = [], [], []

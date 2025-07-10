@@ -41,7 +41,6 @@ def report_model_stats(model, input_shape, name):
     print(f"Saved File Size: {size_MB:.2f} MB")
     print(f"Total Parameters: {params}")
     print(f"FLOPs: {flops}")
-    os.remove(model_path)
 
 # ========================
 # Model Definitions

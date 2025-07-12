@@ -1,13 +1,12 @@
-# [1] ========== Imports ==========
+import os
 import numpy as np
 import pandas as pd
-import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, confusion_matrix, f1_score, accuracy_score
+from sklearn.metrics import classification_report, confusion_matrix, f1_score
 from sklearn.model_selection import train_test_split
 from imblearn.over_sampling import SMOTE
 import matplotlib.pyplot as plt
@@ -16,13 +15,13 @@ import gc
 import joblib
 from thop import profile, clever_format
 
+# Device setup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def free_memory():
     gc.collect()
     torch.cuda.empty_cache()
 
-# [2] ========== Model Size Reporting ==========
 def report_model_stats(model, input_shape, name):
     model.eval()
     torch.save(model.state_dict(), f"{name}.pt")
@@ -32,7 +31,6 @@ def report_model_stats(model, input_shape, name):
     size_MB = os.path.getsize(f"{name}.pt") / (1024 * 1024)
     print(f"\nModel Summary for {name}:\n  Size: {size_MB:.2f} MB\n  Params: {params}\n  FLOPs: {flops}")
 
-# [3] ========== Model Definitions ==========
 class CNN(nn.Module):
     def __init__(self):
         super().__init__()
@@ -81,7 +79,6 @@ class TrainableEnsemble(nn.Module):
         weights = torch.softmax(self.raw_weights, dim=0)
         return torch.sum(weights * model_outputs, dim=1)
 
-# [4] ========== Evaluation Utilities ==========
 def train(model, loader, criterion, optimizer):
     model.train()
     for x, y in loader:
@@ -115,13 +112,14 @@ def predict_dl(model, X_tensor):
             preds.append(prob.cpu())
     return torch.cat(preds).numpy()
 
-# [5] ========== Main Training Loop ==========
+# Storage
 data_dir = "/home/zhuoying"
 version_suffixes = ["v1", "v2", "v3", "v4"]
 model_types = ["CNN", "RNN", "ResNet", "RF"]
 test_data_all, test_labels_all = [], []
 val_labels_all, val_data_all, model_preds, model_val_preds = [], [], [], []
 
+# Training
 for version, model_type in zip(version_suffixes, model_types):
     print(f"\n Processing {model_type} on {version}...")
     X_list, y_list = [], []
@@ -168,13 +166,7 @@ for version, model_type in zip(version_suffixes, model_types):
     if model_type == "RF":
         rf = RandomForestClassifier(n_estimators=100, max_depth=8, n_jobs=1)
         rf.fit(X_train_sm.reshape(len(X_train_sm), -1), y_train_sm)
-        val_flat = X_val.reshape(len(X_val), -1)
-        test_flat = X_test.reshape(len(X_test), -1)
-        val_prob = rf.predict_proba(val_flat)[:, 1]
-        test_prob = rf.predict_proba(test_flat)[:, 1]
-        model_val_preds.append(val_prob)
-        model_preds.append(test_prob)
-        joblib.dump(rf, f"RF_{version}.joblib")
+        torch.save(rf, f"RF_{version}.joblib")
     else:
         model = CNN() if model_type == "CNN" else RNN() if model_type == "RNN" else ResNet1D()
         model.to(device)
@@ -196,92 +188,98 @@ for version, model_type in zip(version_suffixes, model_types):
                 wait += 1
                 if wait >= 30:
                     break
-
-        val_preds = predict_dl(model, X_val_tensor)
-        test_preds = predict_dl(model, X_test_tensor)
-        model_val_preds.append(val_preds)
-        model_preds.append(test_preds)
         torch.save(model.state_dict(), f"{model_type}_{version}.pt")
         report_model_stats(model, (1, 2, X.shape[2]), f"{model_type}_{version}")
 
     free_memory()
 
-
-# [6] ========== Trainable Ensemble on Unified Validation Set ==========
-
-# Step 1: Merge validation data and labels
+# Save merged val set
 X_val_merged = torch.cat(val_data_all, dim=0)
 y_val_merged = torch.cat(val_labels_all, dim=0)
+torch.save(X_val_merged, "X_val_merged.pt")
+torch.save(y_val_merged, "y_val_merged.pt")
+
+# === Load merged validation set ===
+X_val_merged = torch.load("X_val_merged.pt").to(device)
+y_val_merged = torch.load("y_val_merged.pt").to(device)
+
+# === Predict on validation set using 4 models ===
+model_types = ["CNN", "RNN", "ResNet", "RF"]
+version_suffixes = ["v1", "v2", "v3", "v4"]
 model_val_preds = []
 
-# Step 2: Generate predictions from all models on merged val set
 for model_type, version in zip(model_types, version_suffixes):
-    print(f"Predicting with {model_type}_{version} on unified validation set...")
     if model_type == "RF":
-        rf = joblib.load(f"RF_{version}.joblib")
-        X_flat = X_val_merged.numpy().reshape(len(X_val_merged), -1)
-        val_prob = rf.predict_proba(X_flat)[:, 1]
+        rf = torch.load(f"RF_{version}.joblib")
+        val_prob = rf.predict_proba(X_val_merged.cpu().numpy().reshape(len(X_val_merged), -1))[:, 1]
         model_val_preds.append(val_prob)
     else:
-        model = CNN() if model_type == "CNN" else RNN() if model_type == "RNN" else ResNet1D()
+        cls = CNN if model_type == "CNN" else RNN if model_type == "RNN" else ResNet1D
+        model = cls().to(device)
         model.load_state_dict(torch.load(f"{model_type}_{version}.pt", map_location=device))
-        model.to(device)
-        preds = predict_dl(model, X_val_merged)
-        model_val_preds.append(preds)
+        model.eval()
+        model_val_preds.append(predict_dl(model, X_val_merged))
 
-# Step 3: Stack predictions and labels
-# Determine minimum length
+# === Train ensemble ===
 min_len = min(len(p) for p in model_val_preds)
+X_stack = torch.tensor(np.stack([p[:min_len] for p in model_val_preds], axis=1), dtype=torch.float32).to(device)
+y_stack = y_val_merged[:min_len].to(dtype=torch.float32)
 
-# Truncate all predictions to same length
-truncated_preds = [p[:min_len] for p in model_val_preds]
-model_val_preds_tensor = torch.tensor(np.stack(truncated_preds, axis=1), dtype=torch.float32).to(device)
+ensemble = TrainableEnsemble(num_models=4).to(device)
+optimizer = torch.optim.Adam(ensemble.parameters(), lr=0.01)
+criterion = torch.nn.BCEWithLogitsLoss()
 
-# Truncate labels to same length
-y_val_tensor = y_val_merged[:min_len].to(dtype=torch.float32, device=device)
-
-
-# Step 4: Train the ensemble model
-ensemble_model = TrainableEnsemble(num_models=model_val_preds_tensor.shape[1]).to(device)
-optimizer = torch.optim.Adam(ensemble_model.parameters(), lr=0.01)
-criterion = nn.BCEWithLogitsLoss()
-
-for epoch in range(300):
-    ensemble_model.train()
+for _ in range(300):
     optimizer.zero_grad()
-    out = ensemble_model(model_val_preds_tensor)
-    loss = criterion(out, y_val_tensor)
+    out = ensemble(X_stack)
+    loss = criterion(out, y_stack)
     loss.backward()
     optimizer.step()
 
-# Report trainable ensemble model stats
-report_model_stats(ensemble_model, (model_val_preds_tensor.shape[0], model_val_preds_tensor.shape[1]), "TrainableEnsemble")
+torch.save(ensemble.state_dict(), "TrainableEnsemble_HUP.pt")
 
+# === Evaluate on test set ===
+X_test = torch.load("X_test_merged.pt").to(device)
+y_test = torch.load("y_test_merged.pt").to(device)
 
-# [7] ========== Final Evaluation on Test Set ==========
-print("\nEvaluating trained ensemble on merged test set...")
-ensemble_model.eval()
-model_preds_stack_tensor = torch.tensor(np.stack(model_preds, axis=1), dtype=torch.float32).to(device)
+test_preds = []
+for model_type, version in zip(model_types, version_suffixes):
+    if model_type == "RF":
+        rf = torch.load(f"RF_{version}.joblib")
+        prob = rf.predict_proba(X_test.cpu().numpy().reshape(len(X_test), -1))[:, 1]
+        test_preds.append(prob)
+    else:
+        cls = CNN if model_type == "CNN" else RNN if model_type == "RNN" else ResNet1D
+        model = cls().to(device)
+        model.load_state_dict(torch.load(f"{model_type}_{version}.pt", map_location=device))
+        test_preds.append(predict_dl(model, X_test))
+
+min_len_test = min(len(p) for p in test_preds)
+X_test_stack = torch.tensor(np.stack([p[:min_len_test] for p in test_preds], axis=1), dtype=torch.float32).to(device)
+y_test = y_test[:min_len_test]
+
+# Predict ensemble
 with torch.no_grad():
-    final_logits = ensemble_model(model_preds_stack_tensor)
-    final_pred = (torch.sigmoid(final_logits) >= 0.5).cpu().numpy().astype(int)
+    pred_logits = ensemble(X_test_stack)
+    final_pred = (torch.sigmoid(pred_logits) >= 0.5).cpu().numpy().astype(int)
 
-conf_matrix = confusion_matrix(y_test_merged, final_pred)
-report_text = classification_report(y_test_merged, final_pred)
-final_weights = torch.softmax(ensemble_model.raw_weights, dim=0).detach().cpu().numpy()
+conf_matrix = confusion_matrix(y_test.cpu().numpy(), final_pred)
+report = classification_report(y_test.cpu().numpy(), final_pred)
 
-with open("hybrid_classification_report_merged.txt", "w") as f:
+# Save results
+with open("hybrid_classification_report_HUP.txt", "w") as f:
     f.write("Trainable ensemble weights:\n")
-    f.write(str(final_weights))
-    f.write("\nThreshold: 0.5 (sigmoid-based)\n\n")
-    f.write(report_text)
-    f.write("\nConfusion Matrix:\n")
+    f.write(str(torch.softmax(ensemble.raw_weights, dim=0).detach().cpu().numpy()))
+    f.write("\n\nClassification Report:\n")
+    f.write(report)
+    f.write("\n\nConfusion Matrix:\n")
     f.write(str(conf_matrix))
 
+# Plot
 plt.figure(figsize=(6, 4))
 sns.heatmap(conf_matrix, annot=True, fmt='d', cmap="Blues")
-plt.title("Confusion Matrix - Trainable Ensemble (Unified Test Set)")
+plt.title("Confusion Matrix - Trainable Ensemble")
 plt.xlabel("Predicted")
 plt.ylabel("True")
 plt.tight_layout()
-plt.savefig("trainable_ensemble_confusion_matrix.png")
+plt.savefig("ensemble_confusion_matrix_HUP.png") 

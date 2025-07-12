@@ -273,7 +273,7 @@ conf_matrix = confusion_matrix(y_test.cpu().numpy(), final_pred)
 report = classification_report(y_test.cpu().numpy(), final_pred)
 
 # Save results
-with open("hybrid_classification_report_HUP.txt", "w") as f:
+with open("hybrid_classification_report_HUP_trans.txt", "w") as f:
     f.write("Trainable ensemble weights:\n")
     f.write(str(torch.softmax(ensemble.raw_weights, dim=0).detach().cpu().numpy()))
     f.write("\n\nClassification Report:\n")

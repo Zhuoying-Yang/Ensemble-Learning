@@ -132,9 +132,12 @@ for version, model_type in zip(version_suffixes, model_types):
     if len(X) != len(y):
         print(f"Mismatch: X has {len(X)} samples, y has {len(y)} samples")
         continue
+    X_trainval, X_test, y_trainval, y_test = train_test_split(X, y, test_size=0.18, stratify=y, random_state=42)
+    X_train, X_val, y_train, y_val = train_test_split(X_trainval, y_trainval, test_size=0.5, stratify=y_trainval, random_state=42)
 
-    X_trainval, X_test, y_trainval, y_test = train_test_split(X, y, test_size=0.18, stratify=y, random_state=42)    X_train, X_val, y_train, y_val = train_test_split(X_trainval, y_trainval, test_size=0.5, stratify=y_trainva>                                                                                                                    smote = SMOTE(random_state=42)
-    X_train_sm, y_train_sm = smote.fit_resample(X_train.reshape(len(X_train), -1), y_train)                         X_train_sm = X_train_sm.reshape(-1, X.shape[1], X.shape[2])
+    smote = SMOTE(random_state=42)
+    X_train_sm, y_train_sm = smote.fit_resample(X_train.reshape(len(X_train), -1), y_train)
+    X_train_sm = X_train_sm.reshape(-1, X.shape[1], X.shape[2])
 
     X_val_tensor = torch.tensor(X_val, dtype=torch.float32)
     y_val_tensor = torch.tensor(y_val, dtype=torch.long)
@@ -166,7 +169,8 @@ for version, model_type in zip(version_suffixes, model_types):
         for epoch in range(500):
             train(model, train_loader, criterion, optimizer)
             if epoch % 10 == 0:
-                val_loss, val_acc = evaluate(model, DataLoader(TensorDataset(X_val_tensor, y_val_tensor), batch>                print(f"Epoch {epoch}: Val Loss={val_loss:.4f} | Val Acc={val_acc:.4f}")
+                val_loss, val_acc = evaluate(model, DataLoader(TensorDataset(X_val_tensor, y_val_tensor), batch_size=64), criterion)
+                print(f"Epoch {epoch}: Val Loss={val_loss:.4f} | Val Acc={val_acc:.4f}")
             if val_loss < best_val_loss:
                 best_val_loss, wait = val_loss, 0
             else:

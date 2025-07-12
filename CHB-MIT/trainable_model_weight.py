@@ -216,7 +216,7 @@ model_val_preds = []
 for model_type, version in zip(model_types, version_suffixes):
     print(f"Predicting with {model_type}_{version}...")
     if model_type == "RF":
-        rf = joblib.load(f"{model_type}_{version}.pkl")
+        rf = joblib.load(f"{model_type}{version}.joblib")
         val_prob = rf.predict_proba(X_val_merged.numpy().reshape(len(X_val_merged), -1))[:, 1]
         model_val_preds.append(val_prob)
     else:

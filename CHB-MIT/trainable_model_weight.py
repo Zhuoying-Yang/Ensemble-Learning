@@ -155,6 +155,7 @@ for version, model_type in zip(version_suffixes, model_types):
 
     X_val_tensor = torch.tensor(X_val, dtype=torch.float32)
     y_val_tensor = torch.tensor(y_val, dtype=torch.long)
+    val_data_all.append(X_val_tensor)  # Collect validation data for merging later
     val_labels_all.append(y_val_tensor)
 
     X_test_tensor = torch.tensor(X_test, dtype=torch.float32)
@@ -201,11 +202,31 @@ for version, model_type in zip(version_suffixes, model_types):
 
     free_memory()
 
+print("\nPreparing merged validation set...")
+X_val_merged = torch.cat(val_data_all, dim=0)
+y_val_merged = torch.cat(val_labels_all, dim=0)
+
+print("Generating predictions from all models on merged validation set...")
+model_val_preds = []
+
+for model_type, version in zip(model_types, version_suffixes):
+    print(f"Predicting with {model_type}_{version}...")
+    if model_type == "RF":
+        rf = joblib.load(f"{model_type}_{version}.pkl")
+        val_prob = rf.predict_proba(X_val_merged.numpy().reshape(len(X_val_merged), -1))[:, 1]
+        model_val_preds.append(val_prob)
+    else:
+        model = CNN() if model_type == "CNN" else RNN() if model_type == "RNN" else ResNet1D()
+        model.load_state_dict(torch.load(f"{model_type}_{version}.pt", map_location=device))
+        model.to(device)
+        val_preds = predict_dl(model, X_val_merged)
+        model_val_preds.append(val_preds)
+
+
 # Trainable Ensemble on Validation Set
-print("\nTraining trainable ensemble on validation set...")
-min_len_val = min(len(p) for p in model_val_preds)
-model_val_preds_tensor = torch.tensor(np.stack([p[:min_len_val] for p in model_val_preds], axis=1), dtype=torch.float32).to(device)
-y_val_tensor = torch.tensor(torch.cat(val_labels_all, dim=0).numpy()[:min_len_val], dtype=torch.float32).to(device)
+print("\nTraining trainable ensemble on merged validation set...")
+model_val_preds_tensor = torch.tensor(np.stack(model_val_preds, axis=1), dtype=torch.float32).to(device)
+y_val_tensor = y_val_merged.to(dtype=torch.float32, device=device)
 
 ensemble_model = TrainableEnsemble(num_models=model_val_preds_tensor.shape[1]).to(device)
 optimizer = torch.optim.Adam(ensemble_model.parameters(), lr=0.01)
@@ -220,6 +241,7 @@ for epoch in range(300):
     optimizer.step()
 
 report_model_stats(ensemble_model, model_val_preds_tensor.shape, "TrainableEnsemble_CHBMIT")
+
 
 # Final Evaluation on Test Set (Merged)
 print("\nEvaluating trainable ensemble on merged test set...")

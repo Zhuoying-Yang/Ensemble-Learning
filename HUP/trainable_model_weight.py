@@ -230,8 +230,16 @@ for model_type, version in zip(model_types, version_suffixes):
         model_val_preds.append(preds)
 
 # Step 3: Stack predictions and labels
-model_val_preds_tensor = torch.tensor(np.stack(model_val_preds, axis=1), dtype=torch.float32).to(device)
-y_val_tensor = y_val_merged.to(dtype=torch.float32, device=device)
+# Determine minimum length
+min_len = min(len(p) for p in model_val_preds)
+
+# Truncate all predictions to same length
+truncated_preds = [p[:min_len] for p in model_val_preds]
+model_val_preds_tensor = torch.tensor(np.stack(truncated_preds, axis=1), dtype=torch.float32).to(device)
+
+# Truncate labels to same length
+y_val_tensor = y_val_merged[:min_len].to(dtype=torch.float32, device=device)
+
 
 # Step 4: Train the ensemble model
 ensemble_model = TrainableEnsemble(num_models=model_val_preds_tensor.shape[1]).to(device)

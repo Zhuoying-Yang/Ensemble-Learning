@@ -283,7 +283,7 @@ final_pred = (final_combined >= best_thresh).astype(int)
 conf_matrix = confusion_matrix(y_test_merged, final_pred)
 report_text = classification_report(y_test_merged, final_pred)
 
-with open("hybrid_classification_report_merged.txt", "w") as f:
+with open("hybrid_classification_report_hup.txt", "w") as f:
     f.write("Best ensemble weights and threshold (optimized on validation set):\n")
     f.write(str(best_weights))
     f.write(f"\nThreshold: {best_thresh:.2f}\n\n")

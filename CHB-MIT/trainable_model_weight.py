@@ -40,6 +40,7 @@ model_types = ["CNN", "RNN", "ResNet", "RF"]
 test_data_all = []
 test_labels_all = []
 val_labels_all = []
+val_data_all = []
 model_preds = []
 model_val_preds = []
 

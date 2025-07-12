@@ -172,6 +172,8 @@ for version, model_type in zip(version_suffixes, model_types):
         test_prob = rf.predict_proba(X_test.reshape(len(X_test), -1))[:, 1]
         model_val_preds.append(val_prob)
         model_preds.append(test_prob)
+        joblib.dump(rf, f"{model_type}{version}.joblib")
+
     else:
         model = CNN() if model_type == "CNN" else RNN() if model_type == "RNN" else ResNet1D()
         model.to(device)

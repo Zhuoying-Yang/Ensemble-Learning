@@ -48,20 +48,22 @@ class CNN(nn.Module):
         return self.model(x)
 
 class TransformerModel(nn.Module):
-    def __init__(self, input_dim=2, seq_len=256, d_model=64, nhead=4, num_layers=2):
+    def __init__(self, input_dim=23, seq_len=256, d_model=64, nhead=4, num_layers=2):
         super().__init__()
-        self.input_proj = nn.Linear(input_dim, d_model)
+        self.input_proj = nn.Linear(input_dim, d_model)  # 23 → 64
         encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dropout=0.3, batch_first=True)
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        self.fc = nn.Linear(d_model, 2)
-        self.seq_len = seq_len
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.classifier = nn.Linear(d_model, 2)
 
     def forward(self, x):
-        x = x.permute(0, 2, 1)  # (B, S, C)
-        x = self.input_proj(x)  # (B, S, D)
-        x = self.transformer_encoder(x)  # (B, S, D)
-        x = x.mean(dim=1)  # Global average pooling over sequence
-        return self.fc(x)
+        # x: (B, C, T) → (B, T, C)
+        x = x.permute(0, 2, 1)
+        x = self.input_proj(x)  # (B, T, D)
+        x = self.encoder(x)     # (B, T, D)
+        x = x.mean(dim=1)       # (B, D)
+        return self.classifier(x)
+
 
 
 class ResNet1D(nn.Module):

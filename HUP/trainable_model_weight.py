@@ -166,7 +166,7 @@ for version, model_type in zip(version_suffixes, model_types):
     if model_type == "RF":
         rf = RandomForestClassifier(n_estimators=100, max_depth=8, n_jobs=1)
         rf.fit(X_train_sm.reshape(len(X_train_sm), -1), y_train_sm)
-        torch.save(rf, f"RF_{version}.joblib")
+        joblib.dump(rf, f"RF_{version}.joblib")
     else:
         model = CNN() if model_type == "CNN" else RNN() if model_type == "RNN" else ResNet1D()
         model.to(device)
@@ -210,7 +210,7 @@ model_val_preds = []
 
 for model_type, version in zip(model_types, version_suffixes):
     if model_type == "RF":
-        rf = torch.load(f"RF_{version}.joblib")
+        rf = joblib.load(f"RF_{version}.joblib")
         val_prob = rf.predict_proba(X_val_merged.cpu().numpy().reshape(len(X_val_merged), -1))[:, 1]
         model_val_preds.append(val_prob)
     else:

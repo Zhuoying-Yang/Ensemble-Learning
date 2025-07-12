@@ -225,19 +225,44 @@ for model_type, version in zip(model_types, version_suffixes):
         model.to(device)
         val_preds = predict_dl(model, X_val_merged)
         model_val_preds.append(val_preds)
+        
+# Save merged test set
+X_test_merged = torch.cat(test_data_all, dim=0)
+y_test_merged = torch.cat(test_labels_all, dim=0)
+torch.save(X_test_merged, "X_test_merged.pt")
+torch.save(y_test_merged, "y_test_merged.pt")
 
 
 # Trainable Ensemble on Validation Set
 print("\nTraining trainable ensemble on merged validation set...")
 # Determine minimum length
-min_len = min(len(p) for p in model_val_preds)
+X_test_merged = torch.load("X_test_merged.pt").to(device)
+y_test_merged = torch.load("y_test_merged.pt").to(device)
 
-# Truncate all predictions to same length
-truncated_preds = [p[:min_len] for p in model_val_preds]
-model_val_preds_tensor = torch.tensor(np.stack(truncated_preds, axis=1), dtype=torch.float32).to(device)
+# Predict on merged test set
+model_preds = []
+for model_type, version in zip(model_types, version_suffixes):
+    if model_type == "RF":
+        rf = joblib.load(f"{model_type}{version}.joblib")
+        test_prob = rf.predict_proba(X_test_merged.cpu().numpy().reshape(len(X_test_merged), -1))[:, 1]
+        model_preds.append(test_prob)
+    else:
+        model = CNN() if model_type == "CNN" else RNN() if model_type == "RNN" else ResNet1D()
+        model.load_state_dict(torch.load(f"{model_type}_{version}.pt", map_location=device))
+        model.to(device)
+        test_preds = predict_dl(model, X_test_merged)
+        model_preds.append(test_preds)
 
-# Truncate labels to same length
-y_val_tensor = y_val_merged[:min_len].to(dtype=torch.float32, device=device)
+# Truncate and stack
+min_len_test = min(len(p) for p in model_preds)
+model_preds_tensor = torch.tensor(np.stack([p[:min_len_test] for p in model_preds], axis=1), dtype=torch.float32).to(device)
+y_test_combined = y_test_merged[:min_len_test]
+
+# Prepare validation set predictions for ensemble training
+min_len_val = min(len(p) for p in model_val_preds)
+truncated_val_preds = [p[:min_len_val] for p in model_val_preds]
+model_val_preds_tensor = torch.tensor(np.stack(truncated_val_preds, axis=1), dtype=torch.float32).to(device)
+y_val_tensor = y_val_merged[:min_len_val].to(dtype=torch.float32, device=device)
 
 
 ensemble_model = TrainableEnsemble(num_models=model_val_preds_tensor.shape[1]).to(device)

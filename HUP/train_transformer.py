@@ -204,12 +204,12 @@ for version, model_type in zip(version_suffixes, model_types):
 # Save merged val set
 X_val_merged = torch.cat(val_data_all, dim=0)
 y_val_merged = torch.cat(val_labels_all, dim=0)
-torch.save(X_val_merged, "X_val_merged.pt")
-torch.save(y_val_merged, "y_val_merged.pt")
+# torch.save(X_val_merged, "X_val_merged.pt")
+# torch.save(y_val_merged, "y_val_merged.pt")
 
 # === Load merged validation set ===
-X_val_merged = torch.load("X_val_merged.pt").to(device)
-y_val_merged = torch.load("y_val_merged.pt").to(device)
+# X_val_merged = torch.load("X_val_merged.pt").to(device)
+# y_val_merged = torch.load("y_val_merged.pt").to(device)
 
 # === Predict on validation set using 4 models ===
 model_types = ["CNN", "Transformer", "ResNet", "RF"]
@@ -247,8 +247,10 @@ for _ in range(300):
 torch.save(ensemble.state_dict(), "TrainableEnsemble_HUP.pt")
 
 # === Evaluate on test set ===
-X_test = torch.load("X_test_merged.pt").to(device)
-y_test = torch.load("y_test_merged.pt").to(device)
+# X_test = torch.load("X_test_merged.pt").to(device)
+# y_test = torch.load("y_test_merged.pt").to(device)
+X_test = torch.cat(test_data_all, dim=0).to(device)
+y_test = torch.cat(test_labels_all, dim=0).to(device)
 
 test_preds = []
 for model_type, version in zip(model_types, version_suffixes):

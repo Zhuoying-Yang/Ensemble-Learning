@@ -13,6 +13,19 @@ import seaborn as sns
 import itertools
 import gc
 import glob
+from thop import profile, clever_format
+SAVE_DIR = "/home/zhuoying/models_chbmit"
+os.makedirs(SAVE_DIR, exist_ok=True)
+
+def report_model_stats(model, input_shape, name):
+    model.eval()
+    torch.save(model.state_dict(), f"{name}.pt")
+    dummy_input = torch.randn(*input_shape).to(next(model.parameters()).device)
+    flops, params = profile(model, inputs=(dummy_input,), verbose=False)
+    flops, params = clever_format([flops, params], "%.3f")
+    size_MB = os.path.getsize(f"{name}.pt") / (1024 * 1024)
+    print(f"\nModel Summary for {name}:\n  Size: {size_MB:.2f} MB\n  Params: {params}\n  FLOPs: {flops}")
+
 
 # Device setup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -164,28 +177,36 @@ for version, model_type in zip(version_suffixes, model_types):
         test_prob = rf.predict_proba(X_test.reshape(len(X_test), -1))[:, 1]
         model_val_preds.append(val_prob)
         model_preds.append(test_prob)
-    else:
+        else:
         model = CNN() if model_type == "CNN" else TransformerModel() if model_type == "Transformer" else ResNet1D()
         model.to(device)
-        optimizer = optim.Adam(model.parameters(), lr=1e-3)
-        criterion = nn.CrossEntropyLoss()
-  
-        train_loader = DataLoader(TensorDataset(torch.tensor(X_train_sm, dtype=torch.float32),
-                                                torch.tensor(y_train_sm, dtype=torch.long)),
-                                  batch_size=64, shuffle=True)
+        model_path = os.path.join(SAVE_DIR, f"{model_type}_{version}.pt")
+        if os.path.exists(model_path):
+            print(f"Found trained {model_type} model for {version}, loading directly.")
+            model.load_state_dict(torch.load(model_path, map_location=device))
+        else:
+            optimizer = optim.Adam(model.parameters(), lr=1e-3)
+            criterion = nn.CrossEntropyLoss()
+      
+            train_loader = DataLoader(TensorDataset(torch.tensor(X_train_sm, dtype=torch.float32),
+                                                    torch.tensor(y_train_sm, dtype=torch.long)),
+                                      batch_size=64, shuffle=True)
 
-        best_val_loss, wait = float("inf"), 0
-        for epoch in range(500):
-            train(model, train_loader, criterion, optimizer)
-            if epoch % 10 == 0:
-                val_loss, val_acc = evaluate(model, DataLoader(TensorDataset(X_val_tensor, y_val_tensor), batch_size=64), criterion)
-                print(f"Epoch {epoch}: Val Loss={val_loss:.4f} | Val Acc={val_acc:.4f}")
-            if val_loss < best_val_loss:
-                best_val_loss, wait = val_loss, 0
-            else:
-                wait += 1
-                if wait >= 60:
-                    break
+            best_val_loss, wait = float("inf"), 0
+            for epoch in range(500):
+                train(model, train_loader, criterion, optimizer)
+                if epoch % 10 == 0:
+                    val_loss, val_acc = evaluate(model, DataLoader(TensorDataset(X_val_tensor, y_val_tensor), batch_size=64), criterion)
+                    print(f"Epoch {epoch}: Val Loss={val_loss:.4f} | Val Acc={val_acc:.4f}")
+                if val_loss < best_val_loss:
+                    best_val_loss, wait = val_loss, 0
+                else:
+                    wait += 1
+                    if wait >= 60:
+                        break
+
+            torch.save(model.state_dict(), model_path)
+            report_model_stats(model, (1, X.shape[1], X.shape[2]), model_path)
 
         val_preds = predict_dl(model, X_val_tensor)
         test_preds = predict_dl(model, X_test_tensor)

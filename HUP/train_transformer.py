@@ -14,6 +14,7 @@ import seaborn as sns
 import gc
 import joblib
 from thop import profile, clever_format
+import itertools
 
 # Device setup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -240,7 +241,7 @@ for model_type, version in zip(model_types, version_suffixes):
         model.eval()
         model_val_preds.append(predict_dl(model, X_val_merged))
 
-print("\n=== Grid Search for Best Ensemble Weights and Threshold ===")
+print("\nGrid Search for Best Ensemble Weights and Threshold")
 min_len = min(len(p) for p in model_val_preds)
 model_val_preds = [p[:min_len] for p in model_val_preds]
 y_val_combined = y_val_merged[:min_len].cpu().numpy()

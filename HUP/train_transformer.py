@@ -17,6 +17,8 @@ from thop import profile, clever_format
 
 # Device setup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+SAVE_DIR = "/home/zhuoying/models_hup"
+os.makedirs(SAVE_DIR, exist_ok=True)
 
 def free_memory():
     gc.collect()
@@ -194,8 +196,8 @@ for version, model_type in zip(version_suffixes, model_types):
                 wait += 1
                 if wait >= 30:
                     break
-        torch.save(model.state_dict(), f"{model_type}_{version}.pt")
-        report_model_stats(model, (1, 2, X.shape[2]), f"{model_type}_{version}")
+        torch.save(model.state_dict(), os.path.join(SAVE_DIR, f"{model_type}_{version}.pt"))
+        report_model_stats(model, (1, 2, X.shape[2]), os.path.join(SAVE_DIR, f"{model_type}_{version}"))
 
     free_memory()
 
@@ -222,7 +224,7 @@ for model_type, version in zip(model_types, version_suffixes):
     else:
         cls = CNN if model_type == "CNN" else TransformerModel if model_type == "Transformer" else ResNet1D
         model = cls().to(device)
-        model.load_state_dict(torch.load(f"{model_type}_{version}.pt", map_location=device))
+        model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_type}_{version}.pt"), map_location=device))
         model.eval()
         model_val_preds.append(predict_dl(model, X_val_merged))
 
@@ -257,7 +259,7 @@ for model_type, version in zip(model_types, version_suffixes):
     else:
         cls = CNN if model_type == "CNN" else TransformerModel if model_type == "Transformer" else ResNet1D
         model = cls().to(device)
-        model.load_state_dict(torch.load(f"{model_type}_{version}.pt", map_location=device))
+        model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_type}_{version}.pt"), map_location=device))
         test_preds.append(predict_dl(model, X_test))
 
 min_len_test = min(len(p) for p in test_preds)

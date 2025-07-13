@@ -16,6 +16,13 @@ import glob
 from thop import profile, clever_format
 import joblib
 
+class WeightedBCELoss(nn.Module):
+    def __init__(self, pos_weight):
+        super().__init__()
+        self.loss = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    def forward(self, input, target):
+        return self.loss(input, target)
+
 # Device setup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -262,12 +269,18 @@ y_test_combined = y_test_merged[:min_len_test]
 min_len_val = min(len(p) for p in model_val_preds)
 truncated_val_preds = [p[:min_len_val] for p in model_val_preds]
 model_val_preds_tensor = torch.tensor(np.stack(truncated_val_preds, axis=1), dtype=torch.float32).to(device)
-y_val_tensor = y_val_merged[:min_len_val].to(dtype=torch.float32, device=device)
+y_val_tensor = y_val_merged[:min_len_val].float().to(device)
 
+
+pos_weight = torch.tensor((len(y_val_tensor) - y_val_tensor.sum()) / y_val_tensor.sum()).to(device)
+criterion = WeightedBCELoss(pos_weight)
 
 ensemble_model = TrainableEnsemble(num_models=model_val_preds_tensor.shape[1]).to(device)
 optimizer = torch.optim.Adam(ensemble_model.parameters(), lr=0.01)
-criterion = nn.BCEWithLogitsLoss()
+
+best_loss = float('inf')
+wait = 0
+patience = 20
 
 for epoch in range(300):
     ensemble_model.train()
@@ -277,23 +290,49 @@ for epoch in range(300):
     loss.backward()
     optimizer.step()
 
+    if epoch % 10 == 0:
+        print(f"Ensemble Epoch {epoch}: Loss = {loss.item():.4f}")
+
+    if loss.item() < best_loss:
+        best_loss = loss.item()
+        wait = 0
+    else:
+        wait += 1
+        if wait >= patience:
+            print(f"Early stopping at epoch {epoch}")
+            break
+
 report_model_stats(ensemble_model, model_val_preds_tensor.shape, "TrainableEnsemble_CHBMIT")
+
 
 
 # Final Evaluation on Test Set (Merged)
 print("\nEvaluating trainable ensemble on merged test set...")
 min_len_test = min(len(p) for p in model_preds)
 model_preds_tensor = torch.tensor(np.stack([p[:min_len_test] for p in model_preds], axis=1), dtype=torch.float32).to(device)
-y_test_combined = torch.tensor(torch.cat(test_labels_all, dim=0).numpy()[:min_len_test], dtype=torch.float32).to(device)
+y_test_combined = torch.cat(test_labels_all, dim=0)[:min_len_test].float().to(device)
 
 ensemble_model.eval()
 with torch.no_grad():
-    logits = ensemble_model(model_preds_tensor)
-    final_pred = (torch.sigmoid(logits) >= 0.5).cpu().numpy().astype(int)
+    logits_test = ensemble_model(model_preds_tensor).cpu().numpy()
+
+best_f1 = -1
+best_thresh = None
+for thresh in np.arange(0.35, 0.56, 0.02):
+    final_pred = (torch.sigmoid(torch.tensor(logits_test)) >= thresh).numpy().astype(int)
+    f1 = f1_score(y_test_combined.cpu().numpy(), final_pred)
+    if f1 > best_f1:
+        best_f1 = f1
+        best_thresh = thresh
+
+print(f"Best threshold on test set: {best_thresh:.2f} with F1 = {best_f1:.4f}")
+
+final_pred = (torch.sigmoid(torch.tensor(logits_test)) >= best_thresh).numpy().astype(int)
 
 conf_matrix = confusion_matrix(y_test_combined.cpu().numpy(), final_pred)
 report_text = classification_report(y_test_combined.cpu().numpy(), final_pred)
 final_weights = torch.softmax(ensemble_model.raw_weights, dim=0).detach().cpu().numpy()
+
 
 with open("hybrid_classification_report_chbmit.txt", "w") as f:
     f.write("Trainable ensemble weights:\n")

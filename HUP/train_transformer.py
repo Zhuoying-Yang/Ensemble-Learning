@@ -292,9 +292,9 @@ report = classification_report(y_test.cpu().numpy(), final_pred)
 
 # Save results
 with open("hybrid_classification_report_HUP_trans.txt", "w") as f:
-    f.write("Trainable ensemble weights:\n")
-    f.write(str(torch.softmax(ensemble.raw_weights, dim=0).detach().cpu().numpy()))
-    f.write("\n\nClassification Report:\n")
+    f.write("Best ensemble weights and threshold (optimized on validation set):\n")
+    f.write(str(best_weights))
+    f.write(f"\nThreshold: {best_thresh:.2f}\n\n")
     f.write(report)
     f.write("\n\nConfusion Matrix:\n")
     f.write(str(conf_matrix))

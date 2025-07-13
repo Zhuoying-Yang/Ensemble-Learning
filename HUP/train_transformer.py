@@ -267,7 +267,7 @@ y_test = torch.cat(test_labels_all, dim=0).to(device)
 test_preds = []
 for model_type, version in zip(model_types, version_suffixes):
     if model_type == "RF":
-        rf = torch.load(f"RF_{version}.joblib")
+        rf = joblib.load(f"RF_{version}.joblib")
         prob = rf.predict_proba(X_test.cpu().numpy().reshape(len(X_test), -1))[:, 1]
         test_preds.append(prob)
     else:

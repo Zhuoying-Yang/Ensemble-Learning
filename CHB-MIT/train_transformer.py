@@ -177,7 +177,7 @@ for version, model_type in zip(version_suffixes, model_types):
         test_prob = rf.predict_proba(X_test.reshape(len(X_test), -1))[:, 1]
         model_val_preds.append(val_prob)
         model_preds.append(test_prob)
-        else:
+    else:
         model = CNN() if model_type == "CNN" else TransformerModel() if model_type == "Transformer" else ResNet1D()
         model.to(device)
         model_path = os.path.join(SAVE_DIR, f"{model_type}_{version}.pt")

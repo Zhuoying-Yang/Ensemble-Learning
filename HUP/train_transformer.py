@@ -240,23 +240,24 @@ for model_type, version in zip(model_types, version_suffixes):
         model.eval()
         model_val_preds.append(predict_dl(model, X_val_merged))
 
-# === Train ensemble ===
+print("\n=== Grid Search for Best Ensemble Weights and Threshold ===")
 min_len = min(len(p) for p in model_val_preds)
-X_stack = torch.tensor(np.stack([p[:min_len] for p in model_val_preds], axis=1), dtype=torch.float32).to(device)
-y_stack = y_val_merged[:min_len].to(dtype=torch.float32)
+model_val_preds = [p[:min_len] for p in model_val_preds]
+y_val_combined = y_val_merged[:min_len].cpu().numpy()
 
-ensemble = TrainableEnsemble(num_models=4).to(device)
-optimizer = torch.optim.Adam(ensemble.parameters(), lr=0.01)
-criterion = torch.nn.BCEWithLogitsLoss()
+best_f1, best_weights, best_thresh = -1, None, None
+for weights in itertools.product(np.arange(0, 1.1, 0.2), repeat=len(model_val_preds)):
+    if sum(weights) == 0:
+        continue
+    weights = np.array(weights) / sum(weights)
+    combined_val = sum(w * p for w, p in zip(weights, model_val_preds))
+    for thresh in np.arange(0.35, 0.56, 0.02):
+        pred_val = (combined_val >= thresh).astype(int)
+        f1 = f1_score(y_val_combined, pred_val)
+        if f1 > best_f1:
+            best_f1, best_weights, best_thresh = f1, weights, thresh
 
-for _ in range(300):
-    optimizer.zero_grad()
-    out = ensemble(X_stack)
-    loss = criterion(out, y_stack.to(out.device))
-    loss.backward()
-    optimizer.step()
-
-torch.save(ensemble.state_dict(), "TrainableEnsemble_HUP.pt")
+print(f"Best Validation F1: {best_f1:.4f}, Weights: {best_weights}, Threshold: {best_thresh}")
 
 # === Evaluate on test set ===
 # X_test = torch.load("X_test_merged.pt").to(device)
@@ -281,9 +282,9 @@ X_test_stack = torch.tensor(np.stack([p[:min_len_test] for p in test_preds], axi
 y_test = y_test[:min_len_test]
 
 # Predict ensemble
-with torch.no_grad():
-    pred_logits = ensemble(X_test_stack)
-    final_pred = (torch.sigmoid(pred_logits) >= 0.5).cpu().numpy().astype(int)
+final_combined = np.dot(X_test_stack.cpu().numpy(), best_weights)
+final_pred = (final_combined >= best_thresh).astype(int)
+
 
 conf_matrix = confusion_matrix(y_test.cpu().numpy(), final_pred)
 report = classification_report(y_test.cpu().numpy(), final_pred)

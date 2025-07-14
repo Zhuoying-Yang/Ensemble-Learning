@@ -133,19 +133,19 @@ for version, model_type in zip(version_suffixes, model_types):
     print(f"\n Processing {model_type} on {version}...")
     X_list, y_list = [], []
 
-  for file in sorted(os.listdir(data_dir)):
-      if file.endswith(f"{version}_segments.npy") and "LEAR1_REAR1" in file:
-          seg_path = os.path.join(data_dir, file)
-          label_path = seg_path.replace("_segments.npy", "_labels.npy")
-          if not os.path.exists(label_path):
-              continue
-          seg = np.load(seg_path)
-          labels = np.load(label_path)
-          if seg.size == 0 or len(labels) != len(seg):
-              print(f"Skipping malformed file: {file} with shape {seg.shape}")
-              continue
-          X_list.append(seg)
-          y_list.append(labels)
+for file in sorted(os.listdir(data_dir)):
+    if file.endswith(f"{version}_segments.npy") and "LEAR1_REAR1" in file:
+        seg_path = os.path.join(data_dir, file)
+        label_path = seg_path.replace("_segments.npy", "_labels.npy")
+        if not os.path.exists(label_path):
+            continue
+        seg = np.load(seg_path)
+        labels = np.load(label_path)
+        if seg.size == 0 or len(labels) != len(seg):
+            print(f"Skipping malformed file: {file} with shape {seg.shape}")
+            continue
+        X_list.append(seg)
+        y_list.append(labels)
 
     if not X_list:
         continue

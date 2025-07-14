@@ -291,7 +291,7 @@ conf_matrix = confusion_matrix(y_test.cpu().numpy(), final_pred)
 report = classification_report(y_test.cpu().numpy(), final_pred)
 
 # Save results
-with open("hybrid_classification_report_HUP_trans.txt", "w") as f:
+with open("hybrid_classification_report_HUP_trans_raw.txt", "w") as f:
     f.write("Best ensemble weights and threshold (optimized on validation set):\n")
     f.write(str(best_weights))
     f.write(f"\nThreshold: {best_thresh:.2f}\n\n")

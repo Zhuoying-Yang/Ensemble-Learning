@@ -173,45 +173,36 @@ for file in sorted(os.listdir(data_dir)):
     test_labels_all.append(y_test_tensor)
 
     if model_type == "RF":
-        rf_path = f"RF_{version}.joblib"
-        if os.path.exists(rf_path):
-            print(f"Found trained RF model for {version}, loading directly.")
-            rf = joblib.load(rf_path)
-        else:
-            rf = RandomForestClassifier(n_estimators=100, max_depth=8, n_jobs=1)
-            rf.fit(X_train_sm.reshape(len(X_train_sm), -1), y_train_sm)
-            joblib.dump(rf, rf_path)
+        rf_path = f"RF_{version}_raw.joblib"
+        rf = RandomForestClassifier(n_estimators=100, max_depth=8, n_jobs=1)
+        rf.fit(X_train_sm.reshape(len(X_train_sm), -1), y_train_sm)
+        joblib.dump(rf, rf_path)
+
     else:
-        model_path = os.path.join(SAVE_DIR, f"{model_type}_{version}.pt")
+        model_path_raw = os.path.join(SAVE_DIR, f"{model_type}_{version}_raw.pt")
         model = CNN() if model_type == "CNN" else TransformerModel() if model_type == "Transformer" else ResNet1D()
         model.to(device)
-    
-        if os.path.exists(model_path):
-            print(f"Found trained {model_type} model for {version}, loading directly.")
-            model.load_state_dict(torch.load(model_path, map_location=device))
-        else:
-            optimizer = optim.Adam(model.parameters(), lr=1e-3)
-            criterion = nn.CrossEntropyLoss()
-            train_loader = DataLoader(TensorDataset(torch.tensor(X_train_sm, dtype=torch.float32),
-                                                    torch.tensor(y_train_sm, dtype=torch.long)),
-                                      batch_size=64, shuffle=True)
-    
-            best_val_loss, wait = float("inf"), 0
-            for epoch in range(500):
-                train(model, train_loader, criterion, optimizer)
-                if epoch % 10 == 0:
-                    val_loss, val_acc = evaluate(model, DataLoader(TensorDataset(X_val_tensor, y_val_tensor), batch_size=64), criterion)
-                    print(f"Epoch {epoch}: Val Loss={val_loss:.4f} | Val Acc={val_acc:.4f}")
-                if val_loss < best_val_loss:
-                    best_val_loss, wait = val_loss, 0
-                else:
-                    wait += 1
-                    if wait >= 30:
-                        break
-            torch.save(model.state_dict(), model_path)
-            report_model_stats(model, (1, 2, X.shape[2]), model_path)
-
-
+        
+        optimizer = optim.Adam(model.parameters(), lr=1e-3)
+        criterion = nn.CrossEntropyLoss()
+        train_loader = DataLoader(TensorDataset(torch.tensor(X_train_sm, dtype=torch.float32),
+                                                torch.tensor(y_train_sm, dtype=torch.long)),
+                                  batch_size=64, shuffle=True)
+        
+        best_val_loss, wait = float("inf"), 0
+        for epoch in range(500):
+            train(model, train_loader, criterion, optimizer)
+            if epoch % 10 == 0:
+                val_loss, val_acc = evaluate(model, DataLoader(TensorDataset(X_val_tensor, y_val_tensor), batch_size=64), criterion)
+                print(f"Epoch {epoch}: Val Loss={val_loss:.4f} | Val Acc={val_acc:.4f}")
+            if val_loss < best_val_loss:
+                best_val_loss, wait = val_loss, 0
+            else:
+                wait += 1
+                if wait >= 30:
+                    break
+        torch.save(model.state_dict(), model_path_raw)
+        report_model_stats(model, (1, 2, X.shape[2]), model_path_raw)
     free_memory()
 
 # Save merged val set
@@ -275,7 +266,7 @@ for model_type, version in zip(model_types, version_suffixes):
     else:
         cls = CNN if model_type == "CNN" else TransformerModel if model_type == "Transformer" else ResNet1D
         model = cls().to(device)
-        model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_type}_{version}.pt"), map_location=device))
+        model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_type}_{version}_raw.pt"), map_location=device))
         test_preds.append(predict_dl(model, X_test))
 
 min_len_test = min(len(p) for p in test_preds)

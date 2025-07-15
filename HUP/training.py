@@ -1,3 +1,4 @@
+'''Ttraining code using extracted features, RNN, and grid optimization'''
 import numpy as np
 import pandas as pd
 import os

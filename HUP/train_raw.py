@@ -1,3 +1,4 @@
+'''Training code using raw segments, transformer, and grid optimization'''
 import os
 import numpy as np
 import pandas as pd

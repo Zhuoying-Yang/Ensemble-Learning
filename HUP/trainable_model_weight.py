@@ -1,3 +1,4 @@
+'''Training code using extracted features, RNN, and trained ensemble optimization'''
 import os
 import numpy as np
 import pandas as pd

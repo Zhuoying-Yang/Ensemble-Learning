@@ -257,11 +257,29 @@ for i, model_type in enumerate(model_types):
 # Optimize Ensemble on Validation Set
 # ========================
 print("\nOptimizing ensemble on validation set...")
-min_len_val = min(len(p) for p in model_val_preds)
-model_val_preds = [p[:min_len_val] for p in model_val_preds]
-y_val_combined = torch.cat(val_labels_all, dim=0).numpy()[:min_len_val]
+# Merge all validation data
+X_val_merged = torch.cat(val_data_all, dim=0).to(device)
+y_val_merged = torch.cat(val_labels_all, dim=0).to(device)
 
-best_f1, best_weights, best_thresh = -1, None, None
+# === Predict on merged validation set using each model ===
+model_types = ["CNN", "RNN", "ResNet", "RF"]
+version_suffixes = ["v1", "v2", "v3", "v4"]
+model_val_preds = []
+
+for model_type, version in zip(model_types, version_suffixes):
+    if model_type == "RF":
+        rf = joblib.load(os.path.join(MODEL_DIR, f"RF_{version}.joblib"))
+        val_prob = rf.predict_proba(X_val_merged.cpu().numpy().reshape(len(X_val_merged), -1))[:, 1]
+        model_val_preds.append(val_prob)
+    else:
+        cls = CNN if model_type == "CNN" else RNN if model_type == "RNN" else ResNet1D
+        model = cls().to(device)
+        model.load_state_dict(torch.load(os.path.join(MODEL_DIR, f"{model_type}_{version}.pt"), map_location=device))
+        model.eval()
+        model_val_preds.append(predict_dl(model, X_val_merged))
+
+best_f1, best_weights, best_grid_thresh = -1, None, None
+
 for weights in itertools.product(np.arange(0, 1.1, 0.2), repeat=len(model_val_preds)):
     if sum(weights) == 0:
         continue
@@ -269,9 +287,11 @@ for weights in itertools.product(np.arange(0, 1.1, 0.2), repeat=len(model_val_pr
     combined_val = sum(w * p for w, p in zip(weights, model_val_preds))
     for thresh in np.arange(0.35, 0.56, 0.02):
         pred_val = (combined_val >= thresh).astype(int)
-        f1 = f1_score(y_val_combined, pred_val)
+        f1 = f1_score(y_val_merged.cpu().numpy(), pred_val)
         if f1 > best_f1:
-            best_f1, best_weights, best_thresh = f1, weights, thresh
+            best_f1, best_weights, best_grid_thresh = f1, weights, thresh
+
+print(f"[Grid Search] Best Validation F1: {best_f1:.4f}, Weights: {best_weights}, Threshold: {best_grid_thresh:.2f}")
 
 # ========================
 # Apply Ensemble on Unified Test Set

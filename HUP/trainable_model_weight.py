@@ -1,4 +1,4 @@
-'''Training code using extracted features, RNN, and trained ensemble optimization'''
+'''Training code using extracted features, Transformer, and trained ensemble optimization'''
 import os
 import numpy as np
 import pandas as pd
@@ -39,15 +39,21 @@ class CNN(nn.Module):
     def forward(self, x):
         return self.model(x)
 
-class RNN(nn.Module):
-    def __init__(self):
+class TransformerModel(nn.Module):
+    def __init__(self, input_dim=2, seq_len=256, d_model=64, nhead=4, num_layers=2):
         super().__init__()
-        self.rnn = nn.LSTM(2, 64, num_layers=2, dropout=0.3, batch_first=True)
-        self.fc = nn.Linear(64, 2)
+        self.input_proj = nn.Linear(input_dim, d_model)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dropout=0.3, batch_first=True)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.fc = nn.Linear(d_model, 2)
+        self.seq_len = seq_len
+
     def forward(self, x):
-        x = x.permute(0, 2, 1)
-        out, _ = self.rnn(x)
-        return self.fc(out[:, -1, :])
+        x = x.permute(0, 2, 1)  # (B, S, C)
+        x = self.input_proj(x)  # (B, S, D)
+        x = self.transformer_encoder(x)  # (B, S, D)
+        x = x.mean(dim=1)  # Global average pooling over sequence
+        return self.fc(x)
 
 class ResNet1D(nn.Module):
     def __init__(self):
@@ -108,11 +114,14 @@ def predict_dl(model, X_tensor):
 # =================== Data Preparation and Model Training ===================
 data_dir = "/home/zhuoying"
 version_suffixes = ["v1", "v2", "v3", "v4"]
-model_types = ["CNN", "RNN", "ResNet", "RF"]
+model_types = ["CNN", "Transformer", "ResNet", "RF"]
 
 val_data_all = []
 val_labels_all = []
 model_val_preds = []
+test_data_all = []
+test_labels_all = []
+
 
 for version, model_type in zip(version_suffixes, model_types):
     print(f"\nProcessing {model_type} on {version}...")
@@ -142,6 +151,16 @@ for version, model_type in zip(version_suffixes, model_types):
     X_trainval, X_test, y_trainval, y_test = train_test_split(X, y, test_size=0.08, stratify=y, random_state=42)
     X_train, X_val, y_train, y_val = train_test_split(X_trainval, y_trainval, test_size=0.1/0.92, stratify=y_trainval, random_state=42)
 
+    # Debugging prints for each model
+    print(f"[{model_type} {version}] Total loaded segments: {len(X)}")
+    print(f"[{model_type} {version}] Train+Val: {len(X_trainval)} | Test: {len(X_test)}")
+    print(f"[{model_type} {version}] Train: {len(X_train)} | Val: {len(X_val)} | After SMOTE: {len(X_train_sm)}")
+    
+    # Collect test sets for merging later
+    test_data_all.append(torch.tensor(X_test, dtype=torch.float32))
+    test_labels_all.append(torch.tensor(y_test, dtype=torch.long))
+
+
     smote = SMOTE(random_state=42)
     X_train_sm, y_train_sm = smote.fit_resample(X_train.reshape(len(X_train), -1), y_train)
     X_train_sm = X_train_sm.reshape(-1, 2, X.shape[2])
@@ -159,7 +178,7 @@ for version, model_type in zip(version_suffixes, model_types):
         val_prob = rf.predict_proba(X_val.reshape(len(X_val), -1))[:, 1]
     else:
         model_path = os.path.join(MODEL_DIR, f"{model_type}_{version}.pt")
-        model = CNN() if model_type == "CNN" else RNN() if model_type == "RNN" else ResNet1D()
+        model = CNN() if model_type == "CNN" else TransformerModel() if model_type == "Transformer" else ResNet1D()
         if os.path.exists(model_path):
             model.load_state_dict(torch.load(model_path, map_location=device))
         else:
@@ -186,32 +205,49 @@ for version, model_type in zip(version_suffixes, model_types):
 
     model_val_preds.append(val_prob)
     val_data_all.append(X_val_tensor)
-    if len(val_labels_all) == 0:
-        val_labels_all.append(y_val_tensor)
+    val_labels_all.append(y_val_tensor)
+
 
 
 # Merge all validation data
 X_val_merged = torch.cat(val_data_all, dim=0).to(device)
 y_val_merged = torch.cat(val_labels_all, dim=0).to(device)
 
-# === Predict on merged validation set using each model ===
-model_types = ["CNN", "RNN", "ResNet", "RF"]
-version_suffixes = ["v1", "v2", "v3", "v4"]
+# =================== After Merged Validation Data ===================
+
+print("Training unified RF on merged validation set...")
+
+# Train RF on merged validation set
+rf_merged = RandomForestClassifier(n_estimators=100, max_depth=8, n_jobs=1)
+rf_merged.fit(X_val_merged.cpu().numpy().reshape(len(X_val_merged), -1), y_val_merged.cpu().numpy())
+joblib.dump(rf_merged, os.path.join("/home/zhuoying", "RF_merged.joblib"))
+
+# =================== Ensemble Validation Predictions ===================
+
+print("Generating validation predictions for ensemble...")
+
+model_types = ["CNN", "Transformer", "ResNet"]
+version_suffixes = ["v1", "v2", "v3"]
+
 model_val_preds = []
 
+# Predict with CNN, Transformer, ResNet
 for model_type, version in zip(model_types, version_suffixes):
-    if model_type == "RF":
-        rf = joblib.load(os.path.join(MODEL_DIR, f"RF_{version}.joblib"))
-        val_prob = rf.predict_proba(X_val_merged.cpu().numpy().reshape(len(X_val_merged), -1))[:, 1]
-        model_val_preds.append(val_prob)
-    else:
-        cls = CNN if model_type == "CNN" else RNN if model_type == "RNN" else ResNet1D
-        model = cls().to(device)
-        model.load_state_dict(torch.load(os.path.join(MODEL_DIR, f"{model_type}_{version}.pt"), map_location=device))
-        model.eval()
-        model_val_preds.append(predict_dl(model, X_val_merged))
+    cls = CNN if model_type == "CNN" else TransformerModel if model_type == "Transformer" else ResNet1D
+    model = cls().to(device)
+    model.load_state_dict(torch.load(os.path.join(MODEL_DIR, f"{model_type}_{version}.pt"), map_location=device))
+    model.eval()
+    model_val_preds.append(predict_dl(model, X_val_merged))
 
-# === Trainable Ensemble Version ===
+# Predict with unified RF
+rf = joblib.load(os.path.join("/home/zhuoying", "RF_merged.joblib"))
+val_prob_rf = rf.predict_proba(X_val_merged.cpu().numpy().reshape(len(X_val_merged), -1))[:, 1]
+model_val_preds.append(val_prob_rf)
+
+# =================== Trainable Ensemble Weight Optimization ===================
+
+print("Training ensemble weights...")
+
 X_stack = torch.tensor(np.column_stack(model_val_preds), dtype=torch.float32).to(device)
 y_stack = y_val_merged.to(dtype=torch.float32)
 
@@ -242,48 +278,62 @@ for t in thresholds:
 
 print(f"[Trainable] Best threshold after tuning: {best_thresh:.3f} with F1 score: {best_f1:.4f}")
 
+# =================== Merge All Collected Test Sets and Evaluate ===================
 
-# === Evaluate on test set ===
-X_test = torch.load("X_test_merged.pt").to(device)
-y_test = torch.load("y_test_merged.pt").to(device)
+print("\nMerging all collected test sets...")
+
+X_test = torch.cat(test_data_all, dim=0).to(device)
+y_test = torch.cat(test_labels_all, dim=0).to(device)
+
+print(f"Total merged test samples: {len(X_test)}")
+
+print("\nEvaluating on test set...")
 
 test_preds = []
-for model_type, version in zip(model_types, version_suffixes):
-    if model_type == "RF":
-        rf = joblib.load(os.path.join(MODEL_DIR, f"RF_{version}.joblib"))
-        prob = rf.predict_proba(X_test.cpu().numpy().reshape(len(X_test), -1))[:, 1]
-        test_preds.append(prob)
-    else:
-        cls = CNN if model_type == "CNN" else RNN if model_type == "RNN" else ResNet1D
-        model = cls().to(device)
-        model.load_state_dict(torch.load(f"{model_type}_{version}.pt", map_location=device))
-        test_preds.append(predict_dl(model, X_test))
 
+# Predict with CNN, Transformer, ResNet
+model_types_eval = ["CNN", "Transformer", "ResNet"]
+version_suffixes_eval = ["v1", "v2", "v3"]
+
+for model_type, version in zip(model_types_eval, version_suffixes_eval):
+    cls = CNN if model_type == "CNN" else TransformerModel if model_type == "Transformer" else ResNet1D
+    model = cls().to(device)
+    model.load_state_dict(torch.load(os.path.join(MODEL_DIR, f"{model_type}_{version}.pt"), map_location=device))
+    model.eval()
+    test_preds.append(predict_dl(model, X_test))
+
+# Predict with unified RF
+rf = joblib.load(os.path.join("/home/zhuoying", "RF_merged.joblib"))
+prob_rf = rf.predict_proba(X_test.cpu().numpy().reshape(len(X_test), -1))[:, 1]
+test_preds.append(prob_rf)
+
+# Stack predictions and apply ensemble
 X_test_stack = torch.tensor(np.column_stack(test_preds), dtype=torch.float32).to(device)
 
-# Predict ensemble
 with torch.no_grad():
     pred_logits = ensemble(X_test_stack)
     final_probs = torch.sigmoid(pred_logits).cpu().numpy()
     final_pred = (final_probs >= best_thresh).astype(int)
 
-conf_matrix = confusion_matrix(y_test.cpu().numpy(), final_pred)
-report = classification_report(y_test.cpu().numpy(), final_pred)
+y_test_np = y_test.cpu().numpy()
 
-# Save results
+conf_matrix = confusion_matrix(y_test_np, final_pred)
+report = classification_report(y_test_np, final_pred)
+
 with open("hybrid_classification_report_HUP.txt", "w") as f:
     f.write("Trainable ensemble weights:\n")
     f.write(str(torch.softmax(ensemble.raw_weights, dim=0).detach().cpu().numpy()))
+    f.write(f"\n\nBest threshold: {best_thresh}\n")
     f.write("\n\nClassification Report:\n")
     f.write(report)
     f.write("\n\nConfusion Matrix:\n")
     f.write(str(conf_matrix))
 
-# Plot
 plt.figure(figsize=(6, 4))
 sns.heatmap(conf_matrix, annot=True, fmt='d', cmap="Blues")
 plt.title("Confusion Matrix - Trainable Ensemble")
 plt.xlabel("Predicted")
 plt.ylabel("True")
 plt.tight_layout()
-plt.savefig("ensemble_confusion_matrix_HUP.png") 
+plt.savefig("ensemble_confusion_matrix_HUP.png")
+

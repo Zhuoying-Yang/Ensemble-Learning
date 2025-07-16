@@ -77,12 +77,11 @@ class TrainableEnsemble(nn.Module):
     def __init__(self, num_models):
         super().__init__()
         self.raw_weights = nn.Parameter(torch.ones(num_models))
-        self.threshold = nn.Parameter(torch.tensor(0.0))  # Trainable threshold in logits space
 
     def forward(self, model_outputs):
         weights = torch.softmax(self.raw_weights, dim=0)
         logits = torch.sum(weights * model_outputs, dim=1)
-        return logits - self.threshold  # Subtract threshold so it shifts the sigmoid output
+        return logits  # Only logits, no threshold
 
 def train(model, loader, criterion, optimizer):
     model.train()
@@ -266,14 +265,36 @@ ensemble = TrainableEnsemble(num_models=4).to(device)
 optimizer = torch.optim.Adam(ensemble.parameters(), lr=0.01)
 criterion = torch.nn.BCEWithLogitsLoss()
 
-for _ in range(300):
+for epoch in range(300):
     optimizer.zero_grad()
     out = ensemble(X_stack)
     loss = criterion(out, y_stack)
     loss.backward()
     optimizer.step()
+    if epoch % 50 == 0:
+        print(f"Epoch {epoch}: Loss = {loss.item():.4f}")
 
 torch.save(ensemble.state_dict(), "TrainableEnsemble_HUP.pt")
+
+from sklearn.metrics import f1_score
+
+with torch.no_grad():
+    val_logits = ensemble(X_stack).cpu().numpy()
+    val_probs = torch.sigmoid(torch.tensor(val_logits)).numpy()
+
+thresholds = np.linspace(0.1, 0.9, 100)
+best_f1 = 0
+best_thresh = 0.5
+
+for t in thresholds:
+    preds = (val_probs >= t).astype(int)
+    f1 = f1_score(y_stack.cpu().numpy(), preds)
+    if f1 > best_f1:
+        best_f1 = f1
+        best_thresh = t
+
+print(f"Best threshold after tuning: {best_thresh:.3f} with F1 score: {best_f1:.4f}")
+
 
 # === Evaluate on test set ===
 X_test = torch.load("X_test_merged.pt").to(device)
@@ -296,7 +317,8 @@ X_test_stack = torch.tensor(np.column_stack(test_preds), dtype=torch.float32).to
 # Predict ensemble
 with torch.no_grad():
     pred_logits = ensemble(X_test_stack)
-    final_pred = (torch.sigmoid(pred_logits) >= 0.5).cpu().numpy().astype(int)
+    final_probs = torch.sigmoid(pred_logits).cpu().numpy()
+    final_pred = (final_probs >= best_thresh).astype(int)
 
 conf_matrix = confusion_matrix(y_test.cpu().numpy(), final_pred)
 report = classification_report(y_test.cpu().numpy(), final_pred)

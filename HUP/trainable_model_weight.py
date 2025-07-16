@@ -184,8 +184,10 @@ for version, model_type in zip(version_suffixes, model_types):
         val_prob = predict_dl(model, X_val_tensor)
 
     model_val_preds.append(val_prob)
+    val_data_all.append(X_val_tensor)
     if len(val_labels_all) == 0:
         val_labels_all.append(y_val_tensor)
+
 
 # Merge all validation data
 X_val_merged = torch.cat(val_data_all, dim=0).to(device)

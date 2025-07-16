@@ -14,24 +14,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import gc
 import joblib
-from thop import profile, clever_format
 
 MODEL_DIR = "/home/zhuoying/models_hup"
-# Device setup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def free_memory():
     gc.collect()
     torch.cuda.empty_cache()
-
-def report_model_stats(model, input_shape, name):
-    model.eval()
-    torch.save(model.state_dict(), f"{name}.pt")
-    dummy_input = torch.randn(*input_shape).to(next(model.parameters()).device)
-    flops, params = profile(model, inputs=(dummy_input,), verbose=False)
-    flops, params = clever_format([flops, params], "%.3f")
-    size_MB = os.path.getsize(f"{name}.pt") / (1024 * 1024)
-    print(f"\nModel Summary for {name}:\n  Size: {size_MB:.2f} MB\n  Params: {params}\n  FLOPs: {flops}")
 
 class CNN(nn.Module):
     def __init__(self):
@@ -47,12 +36,13 @@ class CNN(nn.Module):
             nn.Dropout(0.3),
             nn.Linear(64, 2)
         )
-    def forward(self, x): return self.model(x)
+    def forward(self, x):
+        return self.model(x)
 
 class RNN(nn.Module):
     def __init__(self):
         super().__init__()
-        self.rnn = nn.LSTM(input_size=2, hidden_size=64, num_layers=2, dropout=0.3, batch_first=True)
+        self.rnn = nn.LSTM(2, 64, num_layers=2, dropout=0.3, batch_first=True)
         self.fc = nn.Linear(64, 2)
     def forward(self, x):
         x = x.permute(0, 2, 1)
@@ -77,11 +67,10 @@ class TrainableEnsemble(nn.Module):
     def __init__(self, num_models):
         super().__init__()
         self.raw_weights = nn.Parameter(torch.ones(num_models))
-
     def forward(self, model_outputs):
         weights = torch.softmax(self.raw_weights, dim=0)
         logits = torch.sum(weights * model_outputs, dim=1)
-        return logits  # Only logits, no threshold
+        return logits
 
 def train(model, loader, criterion, optimizer):
     model.train()
@@ -116,16 +105,16 @@ def predict_dl(model, X_tensor):
             preds.append(prob.cpu())
     return torch.cat(preds).numpy()
 
-# Storage
+# =================== Data Preparation and Model Training ===================
 data_dir = "/home/zhuoying"
 version_suffixes = ["v1", "v2", "v3", "v4"]
 model_types = ["CNN", "RNN", "ResNet", "RF"]
-test_data_all, test_labels_all = [], []
-val_labels_all, val_data_all, model_preds, model_val_preds = [], [], [], []
 
-# Training
+val_labels_all = []
+model_val_preds = []
+
 for version, model_type in zip(version_suffixes, model_types):
-    print(f"\n Processing {model_type} on {version}...")
+    print(f"\nProcessing {model_type} on {version}...")
     X_list, y_list = [], []
 
     for file in sorted(os.listdir(data_dir)):
@@ -137,7 +126,6 @@ for version, model_type in zip(version_suffixes, model_types):
             df = pd.read_csv(feat_path)
             seg = np.load(seg_path)
             if seg.size == 0 or len(df) != len(seg):
-                print(f"Skipping malformed file: {file} with shape {seg.shape}")
                 continue
             X_list.append(seg)
             y_list.append(df["label"].values)
@@ -159,40 +147,27 @@ for version, model_type in zip(version_suffixes, model_types):
 
     X_val_tensor = torch.tensor(X_val, dtype=torch.float32)
     y_val_tensor = torch.tensor(y_val, dtype=torch.long)
-    val_labels_all.append(y_val_tensor)
-    val_data_all.append(X_val_tensor)
-
-    X_test_tensor = torch.tensor(X_test, dtype=torch.float32)
-    y_test_tensor = torch.tensor(y_test, dtype=torch.long)
-    test_data_all.append(X_test_tensor)
-    test_labels_all.append(y_test_tensor)
 
     if model_type == "RF":
         rf_path = os.path.join(MODEL_DIR, f"RF_{version}.joblib")
         if os.path.exists(rf_path):
-            print(f"Loading pre-trained RF_{version} from {rf_path}")
             rf = joblib.load(rf_path)
         else:
-            print(f"Training RF_{version} from scratch...")
             rf = RandomForestClassifier(n_estimators=100, max_depth=8, n_jobs=1)
             rf.fit(X_train_sm.reshape(len(X_train_sm), -1), y_train_sm)
-            print(f"Training complete for RF_{version} (model not saved).")
+        val_prob = rf.predict_proba(X_val.reshape(len(X_val), -1))[:, 1]
     else:
         model_path = os.path.join(MODEL_DIR, f"{model_type}_{version}.pt")
         model = CNN() if model_type == "CNN" else RNN() if model_type == "RNN" else ResNet1D()
-    
         if os.path.exists(model_path):
-            print(f"Loading pre-trained {model_type}_{version} from {model_path}")
             model.load_state_dict(torch.load(model_path, map_location=device))
         else:
-            print(f"Training {model_type}_{version} from scratch...")
             model.to(device)
             optimizer = optim.Adam(model.parameters(), lr=1e-3)
             criterion = nn.CrossEntropyLoss()
             train_loader = DataLoader(TensorDataset(torch.tensor(X_train_sm, dtype=torch.float32),
                                                     torch.tensor(y_train_sm, dtype=torch.long)),
                                       batch_size=64, shuffle=True)
-    
             best_val_loss, wait = float("inf"), 0
             for epoch in range(500):
                 train(model, train_loader, criterion, optimizer)
@@ -205,59 +180,35 @@ for version, model_type in zip(version_suffixes, model_types):
                     wait += 1
                     if wait >= 30:
                         break
-            print(f"Training complete for {model_type}_{version} (model not saved).")
-    
         model.to(device)
+        val_prob = predict_dl(model, X_val_tensor)
 
+    model_val_preds.append(val_prob)
+    if len(val_labels_all) == 0:
+        val_labels_all.append(y_val_tensor)
 
-# Save merged val set
-X_val_merged = torch.cat(val_data_all, dim=0)
-y_val_merged = torch.cat(val_labels_all, dim=0)
-torch.save(X_val_merged, "X_val_merged.pt")
-torch.save(y_val_merged, "y_val_merged.pt")
+# Merge all validation data
+X_val_merged = torch.cat(val_data_all, dim=0).to(device)
+y_val_merged = torch.cat(val_labels_all, dim=0).to(device)
 
-# === Load merged validation set ===
-X_val_merged = torch.load("X_val_merged.pt").to(device)
-y_val_merged = torch.load("y_val_merged.pt").to(device)
-
-# # === Predict on validation set using 4 models ===
-# model_types = ["CNN", "RNN", "ResNet", "RF"]
-# version_suffixes = ["v1", "v2", "v3", "v4"]
-# model_val_preds = []
-
-# for model_type, version in zip(model_types, version_suffixes):
-#     if model_type == "RF":
-#         rf = joblib.load(f"RF_{version}.joblib")
-#         val_prob = rf.predict_proba(X_val_merged.cpu().numpy().reshape(len(X_val_merged), -1))[:, 1]
-#         model_val_preds.append(val_prob)
-#     else:
-#         cls = CNN if model_type == "CNN" else RNN if model_type == "RNN" else ResNet1D
-#         model = cls().to(device)
-#         model.load_state_dict(torch.load(f"{model_type}_{version}.pt", map_location=device))
-#         model.eval()
-#         model_val_preds.append(predict_dl(model, X_val_merged))
-
-# === Train ensemble ===
-X_val_np = X_val_merged.cpu().numpy()
-
+# === Predict on merged validation set using each model ===
+model_types = ["CNN", "RNN", "ResNet", "RF"]
+version_suffixes = ["v1", "v2", "v3", "v4"]
 model_val_preds = []
+
 for model_type, version in zip(model_types, version_suffixes):
     if model_type == "RF":
-        rf = joblib.load(f"RF_{version}.joblib")
-        val_prob = rf.predict_proba(X_val_np.reshape(len(X_val_np), -1))[:, 1]
+        rf = joblib.load(os.path.join(MODEL_DIR, f"RF_{version}.joblib"))
+        val_prob = rf.predict_proba(X_val_merged.cpu().numpy().reshape(len(X_val_merged), -1))[:, 1]
         model_val_preds.append(val_prob)
     else:
         cls = CNN if model_type == "CNN" else RNN if model_type == "RNN" else ResNet1D
         model = cls().to(device)
-        model.load_state_dict(torch.load(f"{model_type}_{version}.pt", map_location=device))
+        model.load_state_dict(torch.load(os.path.join(MODEL_DIR, f"{model_type}_{version}.pt"), map_location=device))
         model.eval()
         model_val_preds.append(predict_dl(model, X_val_merged))
 
-# Confirm shapes
-for i, pred in enumerate(model_val_preds):
-    print(f"Model {i} prediction shape: {pred.shape}, Validation labels shape: {y_val_merged.shape}")
-
-# Stack predictions correctly
+# === Trainable Ensemble Version ===
 X_stack = torch.tensor(np.column_stack(model_val_preds), dtype=torch.float32).to(device)
 y_stack = y_val_merged.to(dtype=torch.float32)
 
@@ -274,26 +225,19 @@ for epoch in range(300):
     if epoch % 50 == 0:
         print(f"Epoch {epoch}: Loss = {loss.item():.4f}")
 
-torch.save(ensemble.state_dict(), "TrainableEnsemble_HUP.pt")
-
-from sklearn.metrics import f1_score
-
 with torch.no_grad():
     val_logits = ensemble(X_stack).cpu().numpy()
     val_probs = torch.sigmoid(torch.tensor(val_logits)).numpy()
 
 thresholds = np.linspace(0.1, 0.9, 100)
-best_f1 = 0
-best_thresh = 0.5
-
+best_f1, best_thresh = 0, 0.5
 for t in thresholds:
     preds = (val_probs >= t).astype(int)
     f1 = f1_score(y_stack.cpu().numpy(), preds)
     if f1 > best_f1:
-        best_f1 = f1
-        best_thresh = t
+        best_f1, best_thresh = f1, t
 
-print(f"Best threshold after tuning: {best_thresh:.3f} with F1 score: {best_f1:.4f}")
+print(f"[Trainable] Best threshold after tuning: {best_thresh:.3f} with F1 score: {best_f1:.4f}")
 
 
 # === Evaluate on test set ===

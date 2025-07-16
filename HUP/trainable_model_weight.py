@@ -110,6 +110,7 @@ data_dir = "/home/zhuoying"
 version_suffixes = ["v1", "v2", "v3", "v4"]
 model_types = ["CNN", "RNN", "ResNet", "RF"]
 
+val_data_all = []
 val_labels_all = []
 model_val_preds = []
 

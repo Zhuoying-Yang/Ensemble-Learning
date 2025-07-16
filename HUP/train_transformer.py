@@ -128,6 +128,7 @@ version_suffixes = ["v1", "v2", "v3", "v4"]
 model_types = ["CNN", "Transformer", "ResNet", "RF"]
 test_data_all, test_labels_all = [], []
 val_labels_all, val_data_all, model_preds, model_val_preds = [], [], [], []
+trained_rf_models = []
 
 # Training
 for version, model_type in zip(version_suffixes, model_types):
@@ -174,19 +175,21 @@ for version, model_type in zip(version_suffixes, model_types):
     test_labels_all.append(y_test_tensor)
 
     if model_type == "RF":
-        rf_path = f"RF_{version}.joblib"
+        rf_path = f"RF_{version}_tune.joblib"
         if os.path.exists(rf_path):
-            print(f"Found trained RF model for {version}, loading directly.")
+            print(f"Found tuned RF model for {version}, loading directly.")
             rf = joblib.load(rf_path)
         else:
+            print(f"Training new tuned RF model for {version} and saving...")
             rf = RandomForestClassifier(n_estimators=100, max_depth=8, n_jobs=1)
             rf.fit(X_train_sm.reshape(len(X_train_sm), -1), y_train_sm)
             joblib.dump(rf, rf_path)
+
     else:
         model_path = os.path.join(SAVE_DIR, f"{model_type}_{version}.pt")
         model = CNN() if model_type == "CNN" else TransformerModel() if model_type == "Transformer" else ResNet1D()
         model.to(device)
-    
+
         if os.path.exists(model_path):
             print(f"Found trained {model_type} model for {version}, loading directly.")
             model.load_state_dict(torch.load(model_path, map_location=device))
@@ -196,7 +199,7 @@ for version, model_type in zip(version_suffixes, model_types):
             train_loader = DataLoader(TensorDataset(torch.tensor(X_train_sm, dtype=torch.float32),
                                                     torch.tensor(y_train_sm, dtype=torch.long)),
                                       batch_size=64, shuffle=True)
-    
+
             best_val_loss, wait = float("inf"), 0
             for epoch in range(500):
                 train(model, train_loader, criterion, optimizer)
@@ -212,8 +215,8 @@ for version, model_type in zip(version_suffixes, model_types):
             torch.save(model.state_dict(), model_path)
             report_model_stats(model, (1, 2, X.shape[2]), model_path)
 
-
     free_memory()
+
 
 # Save merged val set
 X_val_merged = torch.cat(val_data_all, dim=0)
@@ -232,7 +235,8 @@ model_val_preds = []
 
 for model_type, version in zip(model_types, version_suffixes):
     if model_type == "RF":
-        rf = joblib.load(f"RF_{version}.joblib")
+        rf_path = f"RF_{version}_tune.joblib"
+        rf = joblib.load(rf_path)
         val_prob = rf.predict_proba(X_val_merged.cpu().numpy().reshape(len(X_val_merged), -1))[:, 1]
         model_val_preds.append(val_prob)
     else:
@@ -241,7 +245,7 @@ for model_type, version in zip(model_types, version_suffixes):
         model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_type}_{version}.pt"), map_location=device))
         model.eval()
         model_val_preds.append(predict_dl(model, X_val_merged))
-
+        
 print("\nGrid Search for Best Ensemble Weights and Threshold")
 min_len = min(len(p) for p in model_val_preds)
 model_val_preds = [p[:min_len] for p in model_val_preds]
@@ -270,7 +274,8 @@ y_test = torch.cat(test_labels_all, dim=0).to(device)
 test_preds = []
 for model_type, version in zip(model_types, version_suffixes):
     if model_type == "RF":
-        rf = joblib.load(f"RF_{version}.joblib")
+        rf_path = f"RF_{version}_tune.joblib"
+        rf = joblib.load(rf_path)
         prob = rf.predict_proba(X_test.cpu().numpy().reshape(len(X_test), -1))[:, 1]
         test_preds.append(prob)
     else:

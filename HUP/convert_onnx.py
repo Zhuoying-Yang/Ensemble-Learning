@@ -57,12 +57,12 @@ def convert_onnx(onnx_path, model, dummy_input):
     torch.onnx.export(model, dummy_input, onnx_path)
 
 ### CNN model
-# model = CNN()
-# state_dict = torch.load("./models/CNN_v1.pt", map_location=torch.device('cpu'), weights_only=True)
-# model.load_state_dict(state_dict)
-# model.eval()
-# dummy_input = torch.randn(1, 2, 5)  # input shape
-# convert_onnx("./models/CNN_v1.onnx", model, dummy_input)
+model = CNN()
+state_dict = torch.load("./models/CNN_v1.pt", map_location=torch.device('cpu'), weights_only=True)
+model.load_state_dict(state_dict)
+model.eval()
+dummy_input = torch.randn(1, 2, 5)  # input shape
+convert_onnx("./models/CNN_v1.onnx", model, dummy_input)
 
 ### Transformer model
 # model = TransformerModel()

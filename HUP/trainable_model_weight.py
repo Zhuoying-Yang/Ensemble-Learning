@@ -154,7 +154,6 @@ for version, model_type in zip(version_suffixes, model_types):
     # Debugging prints for each model
     print(f"[{model_type} {version}] Total loaded segments: {len(X)}")
     print(f"[{model_type} {version}] Train+Val: {len(X_trainval)} | Test: {len(X_test)}")
-    print(f"[{model_type} {version}] Train: {len(X_train)} | Val: {len(X_val)} | After SMOTE: {len(X_train_sm)}")
     
     # Collect test sets for merging later
     test_data_all.append(torch.tensor(X_test, dtype=torch.float32))
@@ -165,17 +164,22 @@ for version, model_type in zip(version_suffixes, model_types):
     X_train_sm, y_train_sm = smote.fit_resample(X_train.reshape(len(X_train), -1), y_train)
     X_train_sm = X_train_sm.reshape(-1, 2, X.shape[2])
 
+
+    print(f"[{model_type} {version}] Train: {len(X_train)} | Val: {len(X_val)} | After SMOTE: {len(X_train_sm)}")
     X_val_tensor = torch.tensor(X_val, dtype=torch.float32)
     y_val_tensor = torch.tensor(y_val, dtype=torch.long)
 
     if model_type == "RF":
         rf_path = os.path.join(MODEL_DIR, f"RF_{version}.joblib")
-        if os.path.exists(rf_path):
-            rf = joblib.load(rf_path)
-        else:
-            rf = RandomForestClassifier(n_estimators=100, max_depth=8, n_jobs=1)
-            rf.fit(X_train_sm.reshape(len(X_train_sm), -1), y_train_sm)
+
+        # always retrain on this run’s data
+        rf = RandomForestClassifier(n_estimators=100, max_depth=8, n_jobs=1)
+        rf.fit(X_train_sm.reshape(len(X_train_sm), -1), y_train_sm)
+        joblib.dump(rf, rf_path)
+
         val_prob = rf.predict_proba(X_val.reshape(len(X_val), -1))[:, 1]
+
+
     else:
         model_path = os.path.join(MODEL_DIR, f"{model_type}_{version}.pt")
         model = CNN() if model_type == "CNN" else TransformerModel() if model_type == "Transformer" else ResNet1D()

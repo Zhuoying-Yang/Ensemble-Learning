@@ -25,7 +25,7 @@ subjects = [
 
 fs = 1024  # Hz
 chunk_size = 1  # Channels to load at once
-export_chunk_sec = 1800  # 30 minutes = 1800 seconds
+export_chunk_sec = 1800*2  # 30 minutes = 1800 seconds
 
 # -----------------------------
 # Helper Functions
@@ -47,6 +47,14 @@ def clean_signal(data):
             data[~idx] = np.interp(np.flatnonzero(~idx), np.flatnonzero(idx), data[idx])
     return data
 
+def scale_and_clip_signal(data, scale_factor=1e-5, clip_value=500):
+    print(f"Signal min={np.min(data)}, max={np.max(data)} before scaling")
+    data = data * scale_factor
+    print(f"Signal min={np.min(data)}, max={np.max(data)} after scaling")
+    data = np.clip(data, -clip_value, clip_value)
+    print(f"Final data min={np.min(data)}, max={np.max(data)} after clipping")
+    return data
+
 def process_subject(subject_folder):
     subject_path = os.path.join(base_input, subject_folder)
     subject_label = subject_folder.replace('HUP', '').replace('_phaseII', '').replace('b', 'b')
@@ -64,6 +72,7 @@ def process_subject(subject_folder):
             try:
                 data = load_channel(ch_path)
                 data = clean_signal(data)
+                data = scale_and_clip_signal(data)
                 channel_files.append((filename.replace('.mat', ''), data))
                 lengths.append(len(data))
                 print(f"  Loaded {filename}, length: {len(data)}")
@@ -76,7 +85,6 @@ def process_subject(subject_folder):
 
     min_len = min(lengths)
     print(f"  Aligning all channels to {min_len} samples.")
-
     raw = None
     for i in range(0, len(channel_files), chunk_size):
         chunk = channel_files[i:i + chunk_size]
@@ -126,15 +134,13 @@ def process_subject(subject_folder):
         "sampling_frequency": [fs] * len(raw.ch_names),
         "status": ["good"] * len(raw.ch_names)
     })
-    channels_df.to_csv(os.path.join(output_path, f"sub-{subject_label}_ses-phaseII_task-phaseII_channels.tsv"), sep='\t', index=False)
-
+    channels_df.to_csv(os.path.join(output_path, f"sub-{subject_label}_ses-phaseII_task-phaseII_channels.tsv"), sep='\t>
     electrodes_csv = [f for f in os.listdir(subject_path) if f.endswith('_electrodes.csv')]
     if electrodes_csv:
         try:
             electrodes_df = pd.read_csv(os.path.join(subject_path, electrodes_csv[0]))
             electrodes_df.columns = ['name', 'x', 'y', 'z']
-            electrodes_df.to_csv(os.path.join(output_path, f"sub-{subject_label}_electrodes.tsv"), sep='\t', index=False)
-            print("Converted electrodes.csv to electrodes.tsv")
+            electrodes_df.to_csv(os.path.join(output_path, f"sub-{subject_label}_electrodes.tsv"), sep='\t', index=Fals>            print("✅ Converted electrodes.csv to electrodes.tsv")
         except Exception as e:
             print(f"Failed electrodes.csv conversion: {e}")
     else:

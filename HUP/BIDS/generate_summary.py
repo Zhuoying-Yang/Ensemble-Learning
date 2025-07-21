@@ -1,6 +1,4 @@
 import os
-import numpy as np
-import pandas as pd
 from scipy.io import loadmat
 
 # -----------------------------
@@ -11,8 +9,7 @@ bids_root = "/home/zhuoying/projects/def-xilinliu/data/UPenn_data_bids"
 mat_root = "/home/zhuoying/projects/def-xilinliu/data/UPenn_data"
 
 sampling_rate = 1024  # Hz
-chunk_duration_sec = 1800*2  # 60 minutes
-seizure_duration_sec = 120  # As used in your preprocessing
+chunk_duration_sec = 3600  # 1 hour per chunk
 
 subjects = [
     "HUP262b_phaseII",
@@ -26,7 +23,7 @@ subjects = [
 ]
 
 # -----------------------------
-# Main Loop per Subject
+# Process Subjects
 # -----------------------------
 
 for subject in subjects:
@@ -34,69 +31,61 @@ for subject in subjects:
     eeg_dir = os.path.join(bids_root, f"sub-{subj_label}", "ses-phaseII", "eeg")
     mat_file = os.path.join(mat_root, subject, f"{subject}.mat")
 
-    if not os.path.exists(eeg_dir) or not os.path.exists(mat_file):
-        print(f"Skipping {subject} (missing data)")
+    if not os.path.exists(eeg_dir):
+        print(f"Skipping {subject} — EEG folder missing.")
         continue
 
     summary_lines = []
     summary_lines.append(f"Data Sampling Rate: {sampling_rate} Hz")
     summary_lines.append("*" * 25 + "\n")
 
-    # Channels in EDF (if available)
-    channels_file = os.path.join(eeg_dir, f"sub-{subj_label}_ses-phaseII_task-phaseII_channels.tsv")
-    if os.path.exists(channels_file):
-        ch_df = pd.read_csv(channels_file, sep="\t")
-        summary_lines.append("Channels in EDF Files:")
-        summary_lines.append("*" * 23)
-        for idx, row in ch_df.iterrows():
-            summary_lines.append(f"Channel {idx+1}: {row['name']}")
-        summary_lines.append("")
-    else:
-        summary_lines.append("Channels in EDF Files: [Not Found]\n")
+    # Load seizure onsets (if any)
+    seizure_starts = []
+    if os.path.exists(mat_file):
+        try:
+            mat = loadmat(mat_file)
+            tszr = mat.get('tszr', [])
+            if len(tszr) > 0:
+                seizure_starts = [int(round(entry[0][0][0])) for entry in tszr]
+        except Exception as e:
+            print(f"Error loading {subject}: {e}")
 
-    # Load seizure annotations
-    try:
-        mat = loadmat(mat_file)
-        tszr = mat.get("tszr", [])
-        seizure_starts = [int(row[0].item()) for row in tszr] if len(tszr) > 0 else []
-    except Exception as e:
-        print(f"Failed to load seizure info for {subject}: {e}")
-        seizure_starts = []
+    # Get sorted list of EDF files with their numeric run indices
+    edf_files = []
+    for f in os.listdir(eeg_dir):
+        if f.endswith("_eeg.edf"):
+            try:
+                idx = int(f.split("run-")[1].split("_")[0])
+                edf_files.append((idx, f))
+            except Exception:
+                print(f"Skipping invalid EDF: {f}")
 
-    # Check EDFs
-    edf_files = sorted([f for f in os.listdir(eeg_dir) if f.endswith("_eeg.edf")])
-    current_time_sec = 0
+    edf_files_sorted = sorted(edf_files, key=lambda x: x[0])
 
-    for edf_file in edf_files:
-        run_idx = int(edf_file.split("run-")[1].split("_")[0])
-        file_start_sample = (run_idx - 1) * chunk_duration_sec * sampling_rate
-        file_end_sample = run_idx * chunk_duration_sec * sampling_rate
+    # For each EDF file, check for seizures and write summary
+    for chunk_idx, (run_idx, edf_file) in enumerate(edf_files_sorted):
+        file_start_sample = chunk_idx * chunk_duration_sec * sampling_rate
+        file_end_sample = (chunk_idx + 1) * chunk_duration_sec * sampling_rate
 
         summary_lines.append(f"File Name: {edf_file}")
-        summary_lines.append(f"File Start Time: {int(current_time_sec // 3600):02d}:{int((current_time_sec % 3600) // 60):02d}:{int(current_time_sec % 60):02d}")
-        end_time_sec = current_time_sec + chunk_duration_sec
-        summary_lines.append(f"File End Time: {int(end_time_sec // 3600):02d}:{int((end_time_sec % 3600) // 60):02d}:{int(end_time_sec % 60):02d}")
+        summary_lines.append(f"File Start Time: {chunk_idx:02d}:00:00")
+        summary_lines.append(f"File End Time: {chunk_idx + 1:02d}:00:00")
 
         seizures_in_file = []
         for sz_start in seizure_starts:
-            sz_end = sz_start + seizure_duration_sec * sampling_rate
-            if sz_end > file_start_sample and sz_start < file_end_sample:
-                onset_in_file_sec = max(0, (sz_start - file_start_sample) / sampling_rate)
-                end_in_file_sec = min(chunk_duration_sec, (sz_end - file_start_sample) / sampling_rate)
-                seizures_in_file.append((onset_in_file_sec, end_in_file_sec))
+            if file_start_sample <= sz_start < file_end_sample:
+                onset_in_file_sec = (sz_start - file_start_sample) / sampling_rate
+                seizures_in_file.append(int(onset_in_file_sec))
 
         summary_lines.append(f"Number of Seizures in File: {len(seizures_in_file)}")
-        for onset, end in seizures_in_file:
-            summary_lines.append(f"Seizure Start Time: {int(onset)} seconds")
-            summary_lines.append(f"Seizure End Time: {int(end)} seconds")
-
-        summary_lines.append("")
-        current_time_sec += chunk_duration_sec
+        for onset_sec in sorted(seizures_in_file):
+            summary_lines.append(f"Seizure Start Time: {onset_sec} seconds")
+        summary_lines.append("")  # Blank line between files
 
     # Save summary.txt
     with open(os.path.join(eeg_dir, "summary.txt"), "w") as f:
         f.write("\n".join(summary_lines))
 
-    print(f"Generated summary.txt for {subject}")
+    print(f"Saved summary.txt for {subject}")
 
-print("\nAll subject summaries created.")
+print("\nAll summaries generated.")

@@ -28,8 +28,7 @@ three_hours = 3 * 60 * 60 * fs
 four_hours = 4 * 60 * 60 * fs
 non_seizure_ratio = 3
 
-threshold_max = 300      # µV
-threshold_min_std = 1e-3
+threshold_max = 1000  # µV (relaxed for debugging)
 
 # -----------------------------
 # Helpers
@@ -59,16 +58,12 @@ for folder in folders:
     print(f"Reading LEAR1.mat and REAR1.mat...")
     try:
         # Load LEAR1
-        path_lear1 = os.path.join(folder_path, "LEAR1.mat")
-        with h5py.File(path_lear1, 'r') as f:
-            key1 = list(f.keys())[0]
-            eeg_lear1 = np.squeeze(f[key1][()])
+        with h5py.File(os.path.join(folder_path, "LEAR1.mat"), 'r') as f:
+            eeg_lear1 = np.squeeze(f[list(f.keys())[0]][()])
 
         # Load REAR1
-        path_rear1 = os.path.join(folder_path, "REAR1.mat")
-        with h5py.File(path_rear1, 'r') as f:
-            key2 = list(f.keys())[0]
-            eeg_rear1 = np.squeeze(f[key2][()])
+        with h5py.File(os.path.join(folder_path, "REAR1.mat"), 'r') as f:
+            eeg_rear1 = np.squeeze(f[list(f.keys())[0]][()])
 
         min_len = min(len(eeg_lear1), len(eeg_rear1))
         eeg_all = np.stack([eeg_lear1[:min_len], eeg_rear1[:min_len]], axis=0)
@@ -84,33 +79,40 @@ for folder in folders:
         segments_rep, labels_rep = [], []
 
         # Seizure segments
+        seizure_count = 0
         for start in seizure_starts:
             end = start + 120 * fs
             if end > total_len:
                 continue
             raw = eeg_all[:, start:end].copy()
+            valid = True
             for ch in range(2):
                 if np.isnan(raw[ch]).any():
                     if np.all(np.isnan(raw[ch])):
-                        continue
+                        valid = False
+                        break
                     raw[ch] = np.interp(np.arange(len(raw[ch])),
                                         np.flatnonzero(~np.isnan(raw[ch])),
                                         raw[ch][~np.isnan(raw[ch])])
                 raw[ch] -= np.mean(raw[ch])
                 raw[ch] = bandpass(raw[ch], lowcut, highcut, fs)
+            if not valid:
+                continue
 
             n = raw.shape[1] // segment_len
             raw = raw[:, :n * segment_len]
             for seg_idx in range(n):
                 seg = raw[:, seg_idx * segment_len: (seg_idx + 1) * segment_len]
-                if np.max(np.abs(seg)) > threshold_max or np.std(seg) < threshold_min_std:
+                if np.max(np.abs(seg)) > threshold_max:
                     continue
                 segments_rep.append(seg.astype(np.float32))
                 labels_rep.append(1)
+                seizure_count += 1
+
+        print(f"Collected {seizure_count} seizure segments")
 
         # Non-seizure segments
-        n_seizure = sum(np.array(labels_rep) == 1)
-        n_non = n_seizure * non_seizure_ratio
+        n_non = seizure_count * non_seizure_ratio
         non_idxs, attempts = set(), 0
         while len(non_idxs) < n_non and attempts < 200000:
             i = random.randint(0, total_len - segment_len - 1)
@@ -118,29 +120,38 @@ for folder in folders:
                 non_idxs.add(i)
             attempts += 1
 
-        print(f"Sampling {len(non_idxs)} non-seizure segments for version {rep+1}")
+        print(f"Collected {len(non_idxs)} non-seizure candidates after {attempts} attempts")
 
+        nonseizure_count = 0
         for i in non_idxs:
             raw = eeg_all[:, i:i + segment_len].copy()
+            valid = True
             for ch in range(2):
                 if np.isnan(raw[ch]).any():
                     if np.all(np.isnan(raw[ch])):
-                        continue
+                        valid = False
+                        break
                     raw[ch] = np.interp(np.arange(len(raw[ch])),
                                         np.flatnonzero(~np.isnan(raw[ch])),
                                         raw[ch][~np.isnan(raw[ch])])
                 raw[ch] -= np.mean(raw[ch])
                 raw[ch] = bandpass(raw[ch], lowcut, highcut, fs)
-
-            if np.max(np.abs(raw)) > threshold_max or np.std(raw) < threshold_min_std:
+            if not valid:
                 continue
+
+            if np.max(np.abs(raw)) > threshold_max:
+                continue
+
             segments_rep.append(raw.astype(np.float32))
             labels_rep.append(0)
+            nonseizure_count += 1
 
-        base = f"{folder}_LEAR1_REAR1_v{rep+1}"
+        print(f"Final collected segments — Seizure: {seizure_count}, Non-seizure: {nonseizure_count}")
+
+        base = f"{folder}_LEAR1_REAR1_v{rep+1}_raw"
         np.save(f"{base}_segments.npy", np.array(segments_rep, dtype=np.float32))
         np.save(f"{base}_labels.npy", np.array(labels_rep, dtype=np.int64))
-        print(f"Saved {len(labels_rep)} samples → {base}_segments.npy/.npy")
+        print(f"Saved {len(labels_rep)} total segments → {base}_segments.npy / {base}_labels.npy")
 
         del segments_rep, labels_rep
         gc.collect()

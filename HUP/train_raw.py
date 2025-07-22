@@ -1,4 +1,3 @@
-'''Training code using raw segments, transformer, and grid optimization'''
 import os
 import numpy as np
 import pandas as pd
@@ -81,14 +80,6 @@ class ResNet1D(nn.Module):
         out = self.pool(out).squeeze(-1)
         return self.fc(out)
 
-class TrainableEnsemble(nn.Module):
-    def __init__(self, num_models):
-        super().__init__()
-        self.raw_weights = nn.Parameter(torch.ones(num_models))
-    def forward(self, model_outputs):
-        weights = torch.softmax(self.raw_weights, dim=0)
-        return torch.sum(weights * model_outputs, dim=1)
-
 def train(model, loader, criterion, optimizer):
     model.train()
     for x, y in loader:
@@ -135,7 +126,7 @@ for version, model_type in zip(version_suffixes, model_types):
     X_list, y_list = [], []
 
     for file in sorted(os.listdir(data_dir)):
-        if file.endswith(f"{version}_segments.npy") and "LEAR1_REAR1" in file:
+        if file.endswith(f"{version}_raw_segments.npy") and "LEAR1_REAR1" in file:
             seg_path = os.path.join(data_dir, file)
             label_path = seg_path.replace("_segments.npy", "_labels.npy")
             if not os.path.exists(label_path):
@@ -147,9 +138,9 @@ for version, model_type in zip(version_suffixes, model_types):
                 continue
             X_list.append(seg)
             y_list.append(labels)
-    
-        if not X_list:
-            continue
+
+    if not X_list:
+        continue
 
     X = np.vstack(X_list)
     y = np.concatenate(y_list)
@@ -173,64 +164,67 @@ for version, model_type in zip(version_suffixes, model_types):
     test_data_all.append(X_test_tensor)
     test_labels_all.append(y_test_tensor)
 
+    # Check before training
     if model_type == "RF":
         rf_path = f"RF_{version}_raw.joblib"
-        rf = RandomForestClassifier(n_estimators=100, max_depth=8, n_jobs=1)
-        rf.fit(X_train_sm.reshape(len(X_train_sm), -1), y_train_sm)
-        joblib.dump(rf, rf_path)
-
+        if os.path.exists(rf_path):
+            print(f"RF model {rf_path} found. Loading existing model.")
+            rf = joblib.load(rf_path)
+        else:
+            print(f"Training RF model for {version}")
+            rf = RandomForestClassifier(n_estimators=100, max_depth=8, n_jobs=1)
+            rf.fit(X_train_sm.reshape(len(X_train_sm), -1), y_train_sm)
+            joblib.dump(rf, rf_path)
     else:
         model_path_raw = os.path.join(SAVE_DIR, f"{model_type}_{version}_raw.pt")
         model = CNN() if model_type == "CNN" else TransformerModel() if model_type == "Transformer" else ResNet1D()
         model.to(device)
-        
-        optimizer = optim.Adam(model.parameters(), lr=1e-3)
-        criterion = nn.CrossEntropyLoss()
-        train_loader = DataLoader(TensorDataset(torch.tensor(X_train_sm, dtype=torch.float32),
-                                                torch.tensor(y_train_sm, dtype=torch.long)),
-                                  batch_size=64, shuffle=True)
-        
-        best_val_loss, wait = float("inf"), 0
-        for epoch in range(500):
-            train(model, train_loader, criterion, optimizer)
-            if epoch % 10 == 0:
-                val_loss, val_acc = evaluate(model, DataLoader(TensorDataset(X_val_tensor, y_val_tensor), batch_size=64), criterion)
-                print(f"Epoch {epoch}: Val Loss={val_loss:.4f} | Val Acc={val_acc:.4f}")
-            if val_loss < best_val_loss:
-                best_val_loss, wait = val_loss, 0
-            else:
-                wait += 1
-                if wait >= 30:
-                    break
-        torch.save(model.state_dict(), model_path_raw)
-        report_model_stats(model, (1, 2, X.shape[2]), model_path_raw)
+    
+        if os.path.exists(model_path_raw):
+            print(f"{model_type} model {model_path_raw} found. Loading existing model.")
+            model.load_state_dict(torch.load(model_path_raw, map_location=device))
+        else:
+            print(f"Training {model_type} model for {version}")
+            optimizer = optim.Adam(model.parameters(), lr=1e-3)
+            criterion = nn.CrossEntropyLoss()
+            train_loader = DataLoader(
+                TensorDataset(torch.tensor(X_train_sm, dtype=torch.float32),
+                              torch.tensor(y_train_sm, dtype=torch.long)),
+                batch_size=64, shuffle=True
+            )
+    
+            best_val_loss, wait = float("inf"), 0
+            for epoch in range(500):
+                train(model, train_loader, criterion, optimizer)
+                if epoch % 10 == 0:
+                    val_loss, val_acc = evaluate(
+                        model, DataLoader(TensorDataset(X_val_tensor, y_val_tensor), batch_size=64), criterion)
+                    print(f"Epoch {epoch}: Val Loss={val_loss:.4f} | Val Acc={val_acc:.4f}")
+                if val_loss < best_val_loss:
+                    best_val_loss, wait = val_loss, 0
+                else:
+                    wait += 1
+                    if wait >= 30:
+                        break
+            torch.save(model.state_dict(), model_path_raw)
+            report_model_stats(model, (1, 2, X.shape[2]), model_path_raw)
+    
     free_memory()
 
-# Save merged val set
+# === Ensemble Tuning ===
 X_val_merged = torch.cat(val_data_all, dim=0)
 y_val_merged = torch.cat(val_labels_all, dim=0)
-# torch.save(X_val_merged, "X_val_merged.pt")
-# torch.save(y_val_merged, "y_val_merged.pt")
 
-# === Load merged validation set ===
-# X_val_merged = torch.load("X_val_merged.pt").to(device)
-# y_val_merged = torch.load("y_val_merged.pt").to(device)
-
-# === Predict on validation set using 4 models ===
-model_types = ["CNN", "Transformer", "ResNet", "RF"]
-version_suffixes = ["v1", "v2", "v3", "v4"]
 model_val_preds = []
-
 for model_type, version in zip(model_types, version_suffixes):
     if model_type == "RF":
-        rf = joblib.load(f"RF_{version}.joblib")
+        rf = joblib.load(f"RF_{version}_raw.joblib")
         val_prob = rf.predict_proba(X_val_merged.cpu().numpy().reshape(len(X_val_merged), -1))[:, 1]
         model_val_preds.append(val_prob)
     else:
         cls = CNN if model_type == "CNN" else TransformerModel if model_type == "Transformer" else ResNet1D
         model = cls().to(device)
-        model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_type}_{version}.pt"), map_location=device))
-        model.eval()
+        model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_type}_{version}_raw.pt"), map_location=device))
         model_val_preds.append(predict_dl(model, X_val_merged))
 
 print("\nGrid Search for Best Ensemble Weights and Threshold")
@@ -252,16 +246,14 @@ for weights in itertools.product(np.arange(0, 1.1, 0.2), repeat=len(model_val_pr
 
 print(f"Best Validation F1: {best_f1:.4f}, Weights: {best_weights}, Threshold: {best_thresh}")
 
-# === Evaluate on test set ===
-# X_test = torch.load("X_test_merged.pt").to(device)
-# y_test = torch.load("y_test_merged.pt").to(device)
+# === Evaluate on Test Set ===
 X_test = torch.cat(test_data_all, dim=0).to(device)
 y_test = torch.cat(test_labels_all, dim=0).to(device)
 
 test_preds = []
 for model_type, version in zip(model_types, version_suffixes):
     if model_type == "RF":
-        rf = joblib.load(f"RF_{version}.joblib")
+        rf = joblib.load(f"RF_{version}_raw.joblib")
         prob = rf.predict_proba(X_test.cpu().numpy().reshape(len(X_test), -1))[:, 1]
         test_preds.append(prob)
     else:
@@ -278,11 +270,9 @@ y_test = y_test[:min_len_test]
 final_combined = np.dot(X_test_stack.cpu().numpy(), best_weights)
 final_pred = (final_combined >= best_thresh).astype(int)
 
-
 conf_matrix = confusion_matrix(y_test.cpu().numpy(), final_pred)
 report = classification_report(y_test.cpu().numpy(), final_pred)
 
-# Save results
 with open("hybrid_classification_report_HUP_trans_raw.txt", "w") as f:
     f.write("Best ensemble weights and threshold (optimized on validation set):\n")
     f.write(str(best_weights))
@@ -291,11 +281,10 @@ with open("hybrid_classification_report_HUP_trans_raw.txt", "w") as f:
     f.write("\n\nConfusion Matrix:\n")
     f.write(str(conf_matrix))
 
-# Plot
 plt.figure(figsize=(6, 4))
 sns.heatmap(conf_matrix, annot=True, fmt='d', cmap="Blues")
 plt.title("Confusion Matrix - Trainable Ensemble")
 plt.xlabel("Predicted")
 plt.ylabel("True")
 plt.tight_layout()
-plt.savefig("ensemble_confusion_matrix_HUP.png") 
+plt.savefig("ensemble_confusion_matrix_HUP.png")

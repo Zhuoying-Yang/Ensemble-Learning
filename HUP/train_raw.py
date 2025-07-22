@@ -1,3 +1,4 @@
+'''Training code using raw segments, Transformer, and trained ensemble optimization'''
 import os
 import numpy as np
 import pandas as pd
@@ -60,10 +61,10 @@ class TransformerModel(nn.Module):
         self.seq_len = seq_len
 
     def forward(self, x):
-        x = x.permute(0, 2, 1)  # (B, S, C)
-        x = self.input_proj(x)  # (B, S, D)
-        x = self.transformer_encoder(x)  # (B, S, D)
-        x = x.mean(dim=1)  # Global average pooling over sequence
+        x = x.permute(0, 2, 1)
+        x = self.input_proj(x)
+        x = self.transformer_encoder(x)
+        x = x.mean(dim=1)
         return self.fc(x)
 
 class ResNet1D(nn.Module):
@@ -79,6 +80,15 @@ class ResNet1D(nn.Module):
         out = self.relu(self.conv2(out) + out)
         out = self.pool(out).squeeze(-1)
         return self.fc(out)
+
+class TrainableEnsemble(nn.Module):
+    def __init__(self, num_models):
+        super().__init__()
+        self.raw_weights = nn.Parameter(torch.ones(num_models))
+    def forward(self, model_outputs):
+        weights = torch.softmax(self.raw_weights, dim=0)
+        logits = torch.sum(weights * model_outputs, dim=1)
+        return logits
 
 def train(model, loader, criterion, optimizer):
     model.train()
@@ -113,14 +123,13 @@ def predict_dl(model, X_tensor):
             preds.append(prob.cpu())
     return torch.cat(preds).numpy()
 
-# Storage
+# ========== Load and Train All Models ==========
 data_dir = "/home/zhuoying"
 version_suffixes = ["v1", "v2", "v3", "v4"]
 model_types = ["CNN", "Transformer", "ResNet", "RF"]
+val_data_all, val_labels_all, model_val_preds = [], [], []
 test_data_all, test_labels_all = [], []
-val_labels_all, val_data_all, model_preds, model_val_preds = [], [], [], []
 
-# Training
 for version, model_type in zip(version_suffixes, model_types):
     print(f"\n Processing {model_type} on {version}...")
     X_list, y_list = [], []
@@ -134,7 +143,6 @@ for version, model_type in zip(version_suffixes, model_types):
             seg = np.load(seg_path)
             labels = np.load(label_path)
             if seg.size == 0 or len(labels) != len(seg):
-                print(f"Skipping malformed file: {file} with shape {seg.shape}")
                 continue
             X_list.append(seg)
             y_list.append(labels)
@@ -164,27 +172,19 @@ for version, model_type in zip(version_suffixes, model_types):
     test_data_all.append(X_test_tensor)
     test_labels_all.append(y_test_tensor)
 
-    # Check before training
     if model_type == "RF":
-        rf_path = f"RF_{version}_raw.joblib"
-        if os.path.exists(rf_path):
-            print(f"RF model {rf_path} found. Loading existing model.")
-            rf = joblib.load(rf_path)
-        else:
-            print(f"Training RF model for {version}")
-            rf = RandomForestClassifier(n_estimators=100, max_depth=8, n_jobs=1)
-            rf.fit(X_train_sm.reshape(len(X_train_sm), -1), y_train_sm)
-            joblib.dump(rf, rf_path)
+        rf = RandomForestClassifier(n_estimators=100, max_depth=8, n_jobs=1)
+        rf.fit(X_train_sm.reshape(len(X_train_sm), -1), y_train_sm)
+        joblib.dump(rf, f"RF_{version}_raw.joblib")
+        val_prob = rf.predict_proba(X_val.reshape(len(X_val), -1))[:, 1]
     else:
-        model_path_raw = os.path.join(SAVE_DIR, f"{model_type}_{version}_raw.pt")
         model = CNN() if model_type == "CNN" else TransformerModel() if model_type == "Transformer" else ResNet1D()
         model.to(device)
-    
-        if os.path.exists(model_path_raw):
-            print(f"{model_type} model {model_path_raw} found. Loading existing model.")
-            model.load_state_dict(torch.load(model_path_raw, map_location=device))
+        model_path = os.path.join(SAVE_DIR, f"{model_type}_{version}_raw.pt")
+
+        if os.path.exists(model_path):
+            model.load_state_dict(torch.load(model_path, map_location=device))
         else:
-            print(f"Training {model_type} model for {version}")
             optimizer = optim.Adam(model.parameters(), lr=1e-3)
             criterion = nn.CrossEntropyLoss()
             train_loader = DataLoader(
@@ -192,13 +192,11 @@ for version, model_type in zip(version_suffixes, model_types):
                               torch.tensor(y_train_sm, dtype=torch.long)),
                 batch_size=64, shuffle=True
             )
-    
             best_val_loss, wait = float("inf"), 0
             for epoch in range(500):
                 train(model, train_loader, criterion, optimizer)
                 if epoch % 10 == 0:
-                    val_loss, val_acc = evaluate(
-                        model, DataLoader(TensorDataset(X_val_tensor, y_val_tensor), batch_size=64), criterion)
+                    val_loss, val_acc = evaluate(model, DataLoader(TensorDataset(X_val_tensor, y_val_tensor), batch_size=64), criterion)
                     print(f"Epoch {epoch}: Val Loss={val_loss:.4f} | Val Acc={val_acc:.4f}")
                 if val_loss < best_val_loss:
                     best_val_loss, wait = val_loss, 0
@@ -206,47 +204,45 @@ for version, model_type in zip(version_suffixes, model_types):
                     wait += 1
                     if wait >= 30:
                         break
-            torch.save(model.state_dict(), model_path_raw)
-            report_model_stats(model, (1, 2, X.shape[2]), model_path_raw)
-    
+            torch.save(model.state_dict(), model_path)
+            report_model_stats(model, (1, 2, X.shape[2]), model_path)
+        val_prob = predict_dl(model, X_val_tensor)
+
+    model_val_preds.append(val_prob)
     free_memory()
 
-# === Ensemble Tuning ===
-X_val_merged = torch.cat(val_data_all, dim=0)
-y_val_merged = torch.cat(val_labels_all, dim=0)
+# ========== Trainable Ensemble on Validation ==========
+X_val_stack = torch.tensor(np.column_stack(model_val_preds), dtype=torch.float32).to(device)
+y_val_bin = torch.cat(val_labels_all, dim=0).float().to(device)
 
-model_val_preds = []
-for model_type, version in zip(model_types, version_suffixes):
-    if model_type == "RF":
-        rf = joblib.load(f"RF_{version}_raw.joblib")
-        val_prob = rf.predict_proba(X_val_merged.cpu().numpy().reshape(len(X_val_merged), -1))[:, 1]
-        model_val_preds.append(val_prob)
-    else:
-        cls = CNN if model_type == "CNN" else TransformerModel if model_type == "Transformer" else ResNet1D
-        model = cls().to(device)
-        model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_type}_{version}_raw.pt"), map_location=device))
-        model_val_preds.append(predict_dl(model, X_val_merged))
+ensemble = TrainableEnsemble(num_models=len(model_val_preds)).to(device)
+optimizer = torch.optim.Adam(ensemble.parameters(), lr=0.01)
+criterion = torch.nn.BCEWithLogitsLoss()
 
-print("\nGrid Search for Best Ensemble Weights and Threshold")
-min_len = min(len(p) for p in model_val_preds)
-model_val_preds = [p[:min_len] for p in model_val_preds]
-y_val_combined = y_val_merged[:min_len].cpu().numpy()
+for epoch in range(300):
+    optimizer.zero_grad()
+    out = ensemble(X_val_stack)
+    loss = criterion(out, y_val_bin)
+    loss.backward()
+    optimizer.step()
+    if epoch % 50 == 0:
+        print(f"Epoch {epoch}: Loss = {loss.item():.4f}")
 
-best_f1, best_weights, best_thresh = -1, None, None
-for weights in itertools.product(np.arange(0, 1.1, 0.2), repeat=len(model_val_preds)):
-    if sum(weights) == 0:
-        continue
-    weights = np.array(weights) / sum(weights)
-    combined_val = sum(w * p for w, p in zip(weights, model_val_preds))
-    for thresh in np.arange(0.35, 0.56, 0.02):
-        pred_val = (combined_val >= thresh).astype(int)
-        f1 = f1_score(y_val_combined, pred_val)
-        if f1 > best_f1:
-            best_f1, best_weights, best_thresh = f1, weights, thresh
+with torch.no_grad():
+    val_logits = ensemble(X_val_stack).cpu().numpy()
+    val_probs = torch.sigmoid(torch.tensor(val_logits)).numpy()
 
-print(f"Best Validation F1: {best_f1:.4f}, Weights: {best_weights}, Threshold: {best_thresh}")
+thresholds = np.linspace(0.1, 0.9, 100)
+best_f1, best_thresh = 0, 0.5
+for t in thresholds:
+    preds = (val_probs >= t).astype(int)
+    f1 = f1_score(y_val_bin.cpu().numpy(), preds)
+    if f1 > best_f1:
+        best_f1, best_thresh = f1, t
 
-# === Evaluate on Test Set ===
+print(f"[Trainable Ensemble] Best threshold: {best_thresh:.3f} | Best F1: {best_f1:.4f}")
+
+# ========== Predict on Test Set ==========
 X_test = torch.cat(test_data_all, dim=0).to(device)
 y_test = torch.cat(test_labels_all, dim=0).to(device)
 
@@ -262,21 +258,20 @@ for model_type, version in zip(model_types, version_suffixes):
         model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_type}_{version}_raw.pt"), map_location=device))
         test_preds.append(predict_dl(model, X_test))
 
-min_len_test = min(len(p) for p in test_preds)
-X_test_stack = torch.tensor(np.stack([p[:min_len_test] for p in test_preds], axis=1), dtype=torch.float32).to(device)
-y_test = y_test[:min_len_test]
+X_test_stack = torch.tensor(np.column_stack(test_preds), dtype=torch.float32).to(device)
+with torch.no_grad():
+    pred_logits = ensemble(X_test_stack)
+    final_probs = torch.sigmoid(pred_logits).cpu().numpy()
+    final_pred = (final_probs >= best_thresh).astype(int)
 
-# Predict ensemble
-final_combined = np.dot(X_test_stack.cpu().numpy(), best_weights)
-final_pred = (final_combined >= best_thresh).astype(int)
+y_test_np = y_test.cpu().numpy()
+conf_matrix = confusion_matrix(y_test_np, final_pred)
+report = classification_report(y_test_np, final_pred)
 
-conf_matrix = confusion_matrix(y_test.cpu().numpy(), final_pred)
-report = classification_report(y_test.cpu().numpy(), final_pred)
-
-with open("hybrid_classification_report_HUP_trans_raw.txt", "w") as f:
-    f.write("Best ensemble weights and threshold (optimized on validation set):\n")
-    f.write(str(best_weights))
-    f.write(f"\nThreshold: {best_thresh:.2f}\n\n")
+with open("hybrid_classification_report_HUP_trainable.txt", "w") as f:
+    f.write("Trainable ensemble weights:\n")
+    f.write(str(torch.softmax(ensemble.raw_weights, dim=0).cpu().detach().numpy()))
+    f.write(f"\nThreshold: {best_thresh:.3f}\n\n")
     f.write(report)
     f.write("\n\nConfusion Matrix:\n")
     f.write(str(conf_matrix))

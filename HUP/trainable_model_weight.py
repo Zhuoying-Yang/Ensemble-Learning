@@ -28,7 +28,8 @@ class CNN(nn.Module):
         self.model = nn.Sequential(
             nn.Conv1d(2, 16, 5, padding=2), nn.ReLU(),
             nn.Conv1d(16, 32, 3, padding=1), nn.ReLU(),
-            nn.MaxPool1d(2),
+            # nn.MaxPool1d(2),
+            nn.AvgPool1d(2),
             nn.Conv1d(32, 64, 3, padding=1), nn.ReLU(),
             nn.Conv1d(64, 64, 3, padding=1), nn.ReLU(),
             nn.AdaptiveAvgPool1d(1),
@@ -177,6 +178,12 @@ for version, model_type in zip(version_suffixes, model_types):
         rf.fit(X_train_sm.reshape(len(X_train_sm), -1), y_train_sm)
         joblib.dump(rf, rf_path)
 
+
+        total_nodes = sum(est.tree_.node_count for est in rf.estimators_)
+        total_splits = sum(est.tree_.node_count - est.tree_.n_leaves for est in rf.estimators_)
+        print(f"[RF {version}] Total nodes: {total_nodes} | Split nodes: {total_splits}")
+
+
         val_prob = rf.predict_proba(X_val.reshape(len(X_val), -1))[:, 1]
 
 
@@ -245,6 +252,11 @@ for model_type, version in zip(model_types, version_suffixes):
 
 # Predict with unified RF
 rf = joblib.load(os.path.join("/home/zhuoying", "RF_merged.joblib"))
+
+total_nodes = sum(est.tree_.node_count for est in rf.estimators_)
+total_splits = sum(est.tree_.node_count - est.tree_.n_leaves for est in rf.estimators_)
+print(f"[RF_merged] Total nodes: {total_nodes} | Split nodes: {total_splits}")
+
 val_prob_rf = rf.predict_proba(X_val_merged.cpu().numpy().reshape(len(X_val_merged), -1))[:, 1]
 model_val_preds.append(val_prob_rf)
 

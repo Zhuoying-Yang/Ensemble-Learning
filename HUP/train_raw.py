@@ -75,7 +75,7 @@ class CNN(nn.Module):
         self.model = nn.Sequential(
             nn.Conv1d(2, 16, 5, padding=2), nn.ReLU(),
             nn.Conv1d(16, 32, 3, padding=1), nn.ReLU(),
-            nn.MaxPool1d(2),
+            nn.AvgPool1d(2),
             nn.Conv1d(32, 64, 3, padding=1), nn.ReLU(),
             nn.Conv1d(64, 64, 3, padding=1), nn.ReLU(),
             nn.AdaptiveAvgPool1d(1),

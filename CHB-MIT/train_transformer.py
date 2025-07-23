@@ -49,45 +49,42 @@ class CNN(nn.Module):
     def __init__(self):
         super().__init__()
         self.model = nn.Sequential(
-            nn.Conv1d(23, 32, 3, padding=1), nn.ReLU(),
+            nn.Conv1d(23, 16, 5, padding=2), nn.ReLU(),
+            nn.Conv1d(16, 32, 3, padding=1), nn.ReLU(),
+            nn.MaxPool1d(2),
             nn.Conv1d(32, 64, 3, padding=1), nn.ReLU(),
+            nn.Conv1d(64, 64, 3, padding=1), nn.ReLU(),
             nn.AdaptiveAvgPool1d(1),
             nn.Flatten(),
             nn.Dropout(0.3),
             nn.Linear(64, 2)
         )
-
-    def forward(self, x):
-        return self.model(x)
+    def forward(self, x): return self.model(x)
 
 class TransformerModel(nn.Module):
     def __init__(self, input_dim=23, seq_len=256, d_model=64, nhead=4, num_layers=2):
         super().__init__()
-        self.input_proj = nn.Linear(input_dim, d_model)  # 23 → 64
+        self.input_proj = nn.Linear(input_dim, d_model)
         encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dropout=0.3, batch_first=True)
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        self.pool = nn.AdaptiveAvgPool1d(1)
-        self.classifier = nn.Linear(d_model, 2)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.fc = nn.Linear(d_model, 2)
+        self.seq_len = seq_len
 
     def forward(self, x):
-        # x: (B, C, T) → (B, T, C)
         x = x.permute(0, 2, 1)
-        x = self.input_proj(x)  # (B, T, D)
-        x = self.encoder(x)     # (B, T, D)
-        x = x.mean(dim=1)       # (B, D)
-        return self.classifier(x)
-
-
+        x = self.input_proj(x)
+        x = self.transformer_encoder(x)
+        x = x.mean(dim=1)
+        return self.fc(x)
 
 class ResNet1D(nn.Module):
     def __init__(self):
         super().__init__()
-        self.conv1 = nn.Conv1d(23, 32, 3, padding=1)
+        self.conv1 = nn.Conv1d(23, 32, 5, padding=2)
         self.relu = nn.ReLU()
-        self.conv2 = nn.Conv1d(32, 32, 3, padding=1)
+        self.conv2 = nn.Conv1d(32, 32, 5, padding=2)
         self.pool = nn.AdaptiveAvgPool1d(1)
         self.fc = nn.Linear(32, 2)
-
     def forward(self, x):
         out = self.relu(self.conv1(x))
         out = self.relu(self.conv2(out) + out)
@@ -180,7 +177,7 @@ for version, model_type in zip(version_suffixes, model_types):
     else:
         model = CNN() if model_type == "CNN" else TransformerModel() if model_type == "Transformer" else ResNet1D()
         model.to(device)
-        model_path = os.path.join(SAVE_DIR, f"{model_type}_{version}.pt")
+        model_path = os.path.join(SAVE_DIR, f"{model_type}_{version}_mit.pt")
         if os.path.exists(model_path):
             print(f"Found trained {model_type} model for {version}, loading directly.")
             model.load_state_dict(torch.load(model_path, map_location=device))
@@ -202,11 +199,11 @@ for version, model_type in zip(version_suffixes, model_types):
                     best_val_loss, wait = val_loss, 0
                 else:
                     wait += 1
-                    if wait >= 60:
+                    if wait >= 40:
                         break
 
             torch.save(model.state_dict(), model_path)
-            report_model_stats(model, (1, X.shape[1], X.shape[2]), model_path)
+            report_model_stats(model, (1, X.shape[1], X.shape[2]), model_path.replace(".pt", ""))
 
         val_preds = predict_dl(model, X_val_tensor)
         test_preds = predict_dl(model, X_test_tensor)

@@ -15,13 +15,13 @@ import seaborn as sns
 import gc
 import joblib
 from thop import profile, clever_format
-import itertools
 
-# Device setup
+# ========== DEVICE AND PATHS ==========
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SAVE_DIR = "/home/zhuoying/models_hup"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
+# ========== UTILITY FUNCTIONS ==========
 def free_memory():
     gc.collect()
     torch.cuda.empty_cache()
@@ -35,6 +35,40 @@ def report_model_stats(model, input_shape, name):
     size_MB = os.path.getsize(f"{name}.pt") / (1024 * 1024)
     print(f"\nModel Summary for {name}:\n  Size: {size_MB:.2f} MB\n  Params: {params}\n  FLOPs: {flops}")
 
+def train(model, loader, criterion, optimizer):
+    model.train()
+    for x, y in loader:
+        x, y = x.to(device), y.to(device)
+        optimizer.zero_grad()
+        loss = criterion(model(x), y)
+        loss.backward()
+        optimizer.step()
+
+def evaluate(model, loader, criterion):
+    model.eval()
+    loss, correct, total = 0, 0, 0
+    with torch.no_grad():
+        for x, y in loader:
+            x, y = x.to(device), y.to(device)
+            out = model(x)
+            loss += criterion(out, y).item()
+            pred = out.argmax(dim=1)
+            correct += (pred == y).sum().item()
+            total += y.size(0)
+    return loss / len(loader), correct / total
+
+def predict_dl(model, X_tensor):
+    model.eval()
+    loader = DataLoader(X_tensor, batch_size=64)
+    preds = []
+    with torch.no_grad():
+        for x in loader:
+            x = x.to(device)
+            prob = torch.softmax(model(x), dim=1)[:, 1]
+            preds.append(prob.cpu())
+    return torch.cat(preds).numpy()
+
+# ========== MODEL DEFINITIONS ==========
 class CNN(nn.Module):
     def __init__(self):
         super().__init__()
@@ -90,48 +124,15 @@ class TrainableEnsemble(nn.Module):
         logits = torch.sum(weights * model_outputs, dim=1)
         return logits
 
-def train(model, loader, criterion, optimizer):
-    model.train()
-    for x, y in loader:
-        x, y = x.to(device), y.to(device)
-        optimizer.zero_grad()
-        loss = criterion(model(x), y)
-        loss.backward()
-        optimizer.step()
-
-def evaluate(model, loader, criterion):
-    model.eval()
-    loss, correct, total = 0, 0, 0
-    with torch.no_grad():
-        for x, y in loader:
-            x, y = x.to(device), y.to(device)
-            out = model(x)
-            loss += criterion(out, y).item()
-            pred = out.argmax(dim=1)
-            correct += (pred == y).sum().item()
-            total += y.size(0)
-    return loss / len(loader), correct / total
-
-def predict_dl(model, X_tensor):
-    model.eval()
-    loader = DataLoader(X_tensor, batch_size=64)
-    preds = []
-    with torch.no_grad():
-        for x in loader:
-            x = x.to(device)
-            prob = torch.softmax(model(x), dim=1)[:, 1]
-            preds.append(prob.cpu())
-    return torch.cat(preds).numpy()
-
-# ========== Load and Train All Models ==========
+# ========== TRAIN INDIVIDUAL MODELS ==========
 data_dir = "/home/zhuoying"
 version_suffixes = ["v1", "v2", "v3", "v4"]
 model_types = ["CNN", "Transformer", "ResNet", "RF"]
-val_data_all, val_labels_all, model_val_preds = [], [], []
+val_data_all, val_labels_all = [], []
 test_data_all, test_labels_all = [], []
 
 for version, model_type in zip(version_suffixes, model_types):
-    print(f"\n Processing {model_type} on {version}...")
+    print(f"\nProcessing {model_type} on {version}...")
     X_list, y_list = [], []
 
     for file in sorted(os.listdir(data_dir)):
@@ -176,7 +177,6 @@ for version, model_type in zip(version_suffixes, model_types):
         rf = RandomForestClassifier(n_estimators=100, max_depth=8, n_jobs=1)
         rf.fit(X_train_sm.reshape(len(X_train_sm), -1), y_train_sm)
         joblib.dump(rf, f"RF_{version}_raw.joblib")
-        val_prob = rf.predict_proba(X_val.reshape(len(X_val), -1))[:, 1]
     else:
         model = CNN() if model_type == "CNN" else TransformerModel() if model_type == "Transformer" else ResNet1D()
         model.to(device)
@@ -206,16 +206,29 @@ for version, model_type in zip(version_suffixes, model_types):
                         break
             torch.save(model.state_dict(), model_path)
             report_model_stats(model, (1, 2, X.shape[2]), model_path)
-        val_prob = predict_dl(model, X_val_tensor)
 
-    model_val_preds.append(val_prob)
     free_memory()
 
-# ========== Trainable Ensemble on Validation ==========
-X_val_stack = torch.tensor(np.column_stack(model_val_preds), dtype=torch.float32).to(device)
-y_val_bin = torch.cat(val_labels_all, dim=0).float().to(device)
+# ========== ENSEMBLE USING MERGED VALIDATION SET ==========
+merged_val_data = torch.cat(val_data_all, dim=0)
+merged_val_labels = torch.cat(val_labels_all, dim=0)
+merged_preds = []
 
-ensemble = TrainableEnsemble(num_models=len(model_val_preds)).to(device)
+for model_type, version in zip(model_types, version_suffixes):
+    if model_type == "RF":
+        rf = joblib.load(f"RF_{version}_raw.joblib")
+        prob = rf.predict_proba(merged_val_data.cpu().numpy().reshape(len(merged_val_data), -1))[:, 1]
+    else:
+        cls = CNN if model_type == "CNN" else TransformerModel if model_type == "Transformer" else ResNet1D
+        model = cls().to(device)
+        model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_type}_{version}_raw.pt"), map_location=device))
+        prob = predict_dl(model, merged_val_data)
+    merged_preds.append(prob)
+
+X_val_stack = torch.tensor(np.column_stack(merged_preds), dtype=torch.float32).to(device)
+y_val_bin = merged_val_labels.float().to(device)
+
+ensemble = TrainableEnsemble(num_models=len(merged_preds)).to(device)
 optimizer = torch.optim.Adam(ensemble.parameters(), lr=0.01)
 criterion = torch.nn.BCEWithLogitsLoss()
 
@@ -226,7 +239,7 @@ for epoch in range(300):
     loss.backward()
     optimizer.step()
     if epoch % 50 == 0:
-        print(f"Epoch {epoch}: Loss = {loss.item():.4f}")
+        print(f"[Ensemble] Epoch {epoch}: Loss = {loss.item():.4f}")
 
 with torch.no_grad():
     val_logits = ensemble(X_val_stack).cpu().numpy()
@@ -242,7 +255,7 @@ for t in thresholds:
 
 print(f"[Trainable Ensemble] Best threshold: {best_thresh:.3f} | Best F1: {best_f1:.4f}")
 
-# ========== Predict on Test Set ==========
+# ========== PREDICT ON TEST SET ==========
 X_test = torch.cat(test_data_all, dim=0).to(device)
 y_test = torch.cat(test_labels_all, dim=0).to(device)
 
@@ -256,9 +269,11 @@ for model_type, version in zip(model_types, version_suffixes):
         cls = CNN if model_type == "CNN" else TransformerModel if model_type == "Transformer" else ResNet1D
         model = cls().to(device)
         model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_type}_{version}_raw.pt"), map_location=device))
-        test_preds.append(predict_dl(model, X_test))
+        prob = predict_dl(model, X_test)
+        test_preds.append(prob)
 
 X_test_stack = torch.tensor(np.column_stack(test_preds), dtype=torch.float32).to(device)
+
 with torch.no_grad():
     pred_logits = ensemble(X_test_stack)
     final_probs = torch.sigmoid(pred_logits).cpu().numpy()
@@ -268,6 +283,7 @@ y_test_np = y_test.cpu().numpy()
 conf_matrix = confusion_matrix(y_test_np, final_pred)
 report = classification_report(y_test_np, final_pred)
 
+# ========== SAVE RESULTS ==========
 with open("hybrid_classification_report_HUP_trainable.txt", "w") as f:
     f.write("Trainable ensemble weights:\n")
     f.write(str(torch.softmax(ensemble.raw_weights, dim=0).cpu().detach().numpy()))
@@ -283,3 +299,4 @@ plt.xlabel("Predicted")
 plt.ylabel("True")
 plt.tight_layout()
 plt.savefig("ensemble_confusion_matrix_HUP.png")
+

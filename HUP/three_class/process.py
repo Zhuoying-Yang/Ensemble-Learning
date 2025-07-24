@@ -22,13 +22,12 @@ folders = [
 ]
 
 fs = 1024
-segment_len = 4 * 1024  # 4 seconds
+segment_len = 4 * fs  # 4 seconds
 lowcut, highcut = 0.5, 40
 three_hours = 3 * 60 * 60 * fs
 four_hours = 4 * 60 * 60 * fs
 non_seizure_ratio = 3
-
-threshold_max = 1000  # µV (relaxed for debugging)
+threshold_max = 1000  # µV
 
 # -----------------------------
 # Helpers
@@ -55,7 +54,7 @@ for folder in folders:
         print(f"Failed to load label: {e}")
         continue
 
-    print(f"Reading LEAR1.mat and REAR1.mat...")
+    print("Reading LEAR1.mat and REAR1.mat...")
     try:
         with h5py.File(os.path.join(folder_path, "LEAR1.mat"), 'r') as f:
             eeg_lear1 = np.squeeze(f[list(f.keys())[0]][()])
@@ -109,15 +108,27 @@ for folder in folders:
 
         # Preictal segments (label = 2)
         preictal_count = 0
-        offset_sec = 5 * 60 + rep * 120  # 5min + (rep * 2min)
-        preictal_start_offset = offset_sec * fs
-        preictal_end_offset = (offset_sec + 120) * fs
+        preictal_end_offset = 2 * 60 * fs
+        preictal_max_start_offset = 5 * 60 * fs
 
         for start in seizure_starts:
-            pre_start = start - preictal_end_offset
-            pre_end = start - preictal_start_offset
-            if pre_start < 0 or pre_end > total_len:
+            pre_end = int(start - preictal_end_offset)
+            pre_start = max(0, int(start - preictal_max_start_offset))
+
+            if pre_end <= pre_start or pre_end > total_len:
                 continue
+
+            overlaps = False
+            for other_start in seizure_starts:
+                if abs(other_start - start) < 1e-3:
+                    continue  # skip self
+                other_end = other_start + 120 * fs
+                if pre_end > other_start and pre_start < other_end:
+                    overlaps = True
+                    break
+            if overlaps:
+                continue
+
             raw = eeg_all[:, pre_start:pre_end].copy()
             valid = True
             for ch in range(2):
@@ -143,7 +154,7 @@ for folder in folders:
                 labels_rep.append(2)
                 preictal_count += 1
 
-        print(f"Collected {preictal_count} preictal segments (version {rep+1})")
+        print(f"Collected {preictal_count} preictal segments (as long as 2–5 min available)")
 
         # Non-seizure segments (label = 0)
         n_non = seizure_count * non_seizure_ratio

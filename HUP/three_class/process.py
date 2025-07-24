@@ -28,6 +28,7 @@ three_hours = 3 * 60 * 60 * fs
 four_hours = 4 * 60 * 60 * fs
 non_seizure_ratio = 3
 threshold_max = 1000  # µV
+gap_threshold = 2 * 60 * fs  # 2 minutes
 
 # -----------------------------
 # Helpers
@@ -49,7 +50,8 @@ for folder in folders:
         mat = loadmat(label_path)
         tszr = mat.get("tszr", [])
         seizure_starts = [int(row[0].item()) for row in tszr]
-        print(f"Found {len(seizure_starts)} annotated event(s)")
+        seizure_starts = sorted(seizure_starts)
+        print(f"Found {len(seizure_starts)} annotated events")
     except Exception as e:
         print(f"Failed to load label: {e}")
         continue
@@ -69,13 +71,20 @@ for folder in folders:
 
     total_len = eeg_all.shape[1]
 
+    # ----------- Group close seizure events -----------
+    grouped_seizure_starts = []
+    for s in seizure_starts:
+        if not grouped_seizure_starts or s - grouped_seizure_starts[-1] > gap_threshold:
+            grouped_seizure_starts.append(s)
+    print(f"Grouped into {len(grouped_seizure_starts)} seizure events")
+
     for rep in range(4):
         print(f"\nPreparing dataset version {rep+1}/4...")
         segments_rep, labels_rep = [], []
 
         # Seizure segments (label = 1)
         seizure_count = 0
-        for start in seizure_starts:
+        for start in grouped_seizure_starts:
             end = start + 120 * fs
             if end > total_len:
                 continue
@@ -106,24 +115,21 @@ for folder in folders:
 
         print(f"Collected {seizure_count} seizure segments")
 
-        # Preictal segments (label = 2)
+        # Preictal segments (label = 2), from 0–5 min before each grouped seizure
         preictal_count = 0
-        preictal_end_offset = 2 * 60 * fs
-        preictal_max_start_offset = 5 * 60 * fs
-
-        for start in seizure_starts:
-            pre_end = int(start - preictal_end_offset)
-            pre_start = max(0, int(start - preictal_max_start_offset))
+        preictal_max_offset = 5 * 60 * fs
+        for start in grouped_seizure_starts:
+            pre_start = max(0, int(start - preictal_max_offset))
+            pre_end = int(start)
 
             if pre_end <= pre_start or pre_end > total_len:
                 continue
 
+            # Ensure no overlap with any raw seizure annotation
             overlaps = False
-            for other_start in seizure_starts:
-                if abs(other_start - start) < 1e-3:
-                    continue  # skip self
-                other_end = other_start + 120 * fs
-                if pre_end > other_start and pre_start < other_end:
+            for other in seizure_starts:
+                other_end = other + 120 * fs
+                if pre_end > other and pre_start < other_end:
                     overlaps = True
                     break
             if overlaps:
@@ -154,7 +160,7 @@ for folder in folders:
                 labels_rep.append(2)
                 preictal_count += 1
 
-        print(f"Collected {preictal_count} preictal segments (as long as 2–5 min available)")
+        print(f"Collected {preictal_count} preictal segments (0–5 min before grouped seizure)")
 
         # Non-seizure segments (label = 0)
         n_non = seizure_count * non_seizure_ratio

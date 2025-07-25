@@ -238,7 +238,7 @@ y_train_all = torch.cat(merged_train_labels, dim=0)
 
 train_preds = []
 for model_type, version in zip(model_types, version_suffixes):
-    model_name = f"{model_type}_{version}_raw_three"
+    model_name = f"{model_type}_{version}_raw_three_focal"
     if model_type == "RF":
         rf = joblib.load(f"{model_name}.joblib")
         prob = rf.predict_proba(X_train_all.cpu().numpy().reshape(len(X_train_all), -1))
@@ -254,7 +254,7 @@ y_train_true = y_train_all.long().to(device)
 merged_preds = []
 
 for model_type, version in zip(model_types, version_suffixes):
-    model_name = f"{model_type}_{version}_raw_three"
+    model_name = f"{model_type}_{version}_raw_three_focal"
     if model_type == "RF":
         rf = joblib.load(f"{model_name}.joblib")
         prob = rf.predict_proba(merged_val_data.cpu().numpy().reshape(len(merged_val_data), -1))
@@ -297,7 +297,7 @@ X_test, y_test = X_test.to(device), y_test.to(device)
 
 test_preds = []
 for model_type, version in zip(model_types, version_suffixes):
-    model_name = f"{model_type}_{version}_raw_three"
+    model_name = f"{model_type}_{version}_raw_three_focal"
     if model_type == "RF":
         rf = joblib.load(f"{model_name}.joblib")
         prob = rf.predict_proba(X_test.cpu().numpy().reshape(len(X_test), -1))

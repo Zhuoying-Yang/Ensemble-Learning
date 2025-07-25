@@ -22,7 +22,7 @@ folders = [
 ]
 
 fs = 1024
-segment_len = 4 * fs  # 4 seconds
+segment_len = 2 * fs  # 2 seconds
 lowcut, highcut = 0.5, 40
 three_hours = 3 * 60 * 60 * fs
 four_hours = 4 * 60 * 60 * fs
@@ -85,7 +85,7 @@ for folder in folders:
         # Seizure segments (label = 1)
         seizure_count = 0
         for start in grouped_seizure_starts:
-            end = start + 120 * fs
+            end = start + 300 * fs
             if end > total_len:
                 continue
             raw = eeg_all[:, start:end].copy()
@@ -115,9 +115,9 @@ for folder in folders:
 
         print(f"Collected {seizure_count} seizure segments")
 
-        # Preictal segments (label = 2), from 0–5 min before each grouped seizure
+        # Preictal segments (label = 2), from 0–10 min before each grouped seizure
         preictal_count = 0
-        preictal_max_offset = 5 * 60 * fs
+        preictal_max_offset = 10 * 60 * fs
         for start in grouped_seizure_starts:
             pre_start = max(0, int(start - preictal_max_offset))
             pre_end = int(start)

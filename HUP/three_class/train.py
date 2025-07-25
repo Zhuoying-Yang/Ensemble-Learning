@@ -70,17 +70,24 @@ class CNN(nn.Module):
     def __init__(self):
         super().__init__()
         self.model = nn.Sequential(
-            nn.Conv1d(2, 16, 5, padding=2), nn.ReLU(),
-            nn.Conv1d(16, 32, 3, padding=1), nn.ReLU(),
+            nn.Conv1d(2, 32, 5, padding=2), nn.BatchNorm1d(32), nn.ReLU(),
+            nn.Conv1d(32, 64, 3, padding=1), nn.BatchNorm1d(64), nn.ReLU(),
             nn.MaxPool1d(2),
-            nn.Conv1d(32, 64, 3, padding=1), nn.ReLU(),
-            nn.Conv1d(64, 64, 3, padding=1), nn.ReLU(),
+
+            nn.Conv1d(64, 128, 3, padding=1), nn.BatchNorm1d(128), nn.ReLU(),
+            nn.Conv1d(128, 128, 3, padding=1), nn.BatchNorm1d(128), nn.ReLU(),
+            nn.MaxPool1d(2),
+
             nn.AdaptiveMaxPool1d(1),
             nn.Flatten(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.4),
+            nn.Linear(128, 64), nn.ReLU(),
+            nn.Dropout(0.2),
             nn.Linear(64, 3)
         )
-    def forward(self, x): return self.model(x)
+    def forward(self, x):
+        return self.model(x)
+
 
 class TransformerModel(nn.Module):
     def __init__(self, input_dim=2, seq_len=256, d_model=64, nhead=4, num_layers=2):
@@ -98,19 +105,40 @@ class TransformerModel(nn.Module):
         x = x.mean(dim=1)
         return self.fc(x)
 
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv1d(in_channels, out_channels, 3, padding=1),
+            nn.BatchNorm1d(out_channels),
+            nn.ReLU(),
+            nn.Conv1d(out_channels, out_channels, 3, padding=1),
+            nn.BatchNorm1d(out_channels)
+        )
+        self.skip = nn.Conv1d(in_channels, out_channels, 1) if in_channels != out_channels else nn.Identity()
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        return self.relu(self.conv(x) + self.skip(x))
+
 class ResNet1D(nn.Module):
     def __init__(self):
         super().__init__()
-        self.conv1 = nn.Conv1d(2, 32, 5, padding=2)
-        self.relu = nn.ReLU()
-        self.conv2 = nn.Conv1d(32, 32, 5, padding=2)
+        self.block1 = ResidualBlock(2, 64)
+        self.block2 = ResidualBlock(64, 128)
         self.pool = nn.AdaptiveMaxPool1d(1)
-        self.fc = nn.Linear(32, 3)
+        self.fc = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(128, 64), nn.ReLU(), nn.Dropout(0.2),
+            nn.Linear(64, 3)
+        )
+
     def forward(self, x):
-        out = self.relu(self.conv1(x))
-        out = self.relu(self.conv2(out) + out)
-        out = self.pool(out).squeeze(-1)
-        return self.fc(out)
+        x = self.block1(x)
+        x = self.block2(x)
+        x = self.pool(x)
+        return self.fc(x)
+
 
 class TrainableEnsemble(nn.Module):
     def __init__(self, num_models):
@@ -140,7 +168,7 @@ for version, model_type in zip(version_suffixes, model_types):
     test_data_all.append(test_X)
     test_labels_all.append(test_y)
 
-    model_name = f"{model_type}_{version}_raw_three"
+    model_name = f"{model_type}_{version}_raw_three_complex"
 
     if model_type == "RF":
         rf = RandomForestClassifier(n_estimators=100, max_depth=8, n_jobs=1)
@@ -176,7 +204,32 @@ for version, model_type in zip(version_suffixes, model_types):
     free_memory()
 
 # ========== ENSEMBLE USING MERGED VALIDATION SET ==========
+merged_train_data = []
+merged_train_labels = []
 merged_val_data, merged_val_labels = torch.load(f"{PREPROCESSED_DIR}/merged_val_raw_three.pt")
+for version in version_suffixes:
+    train_X, train_y = torch.load(f"{PREPROCESSED_DIR}/train_{version}_raw_three.pt")
+    merged_train_data.append(train_X)
+    merged_train_labels.append(train_y)
+
+X_train_all = torch.cat(merged_train_data, dim=0)
+y_train_all = torch.cat(merged_train_labels, dim=0)
+
+train_preds = []
+for model_type, version in zip(model_types, version_suffixes):
+    model_name = f"{model_type}_{version}_raw_three"
+    if model_type == "RF":
+        rf = joblib.load(f"{model_name}.joblib")
+        prob = rf.predict_proba(X_train_all.cpu().numpy().reshape(len(X_train_all), -1))
+    else:
+        cls = CNN if model_type == "CNN" else TransformerModel if model_type == "Transformer" else ResNet1D
+        model = cls().to(device)
+        model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
+        prob = predict_dl(model, X_train_all)
+    train_preds.append(prob)
+
+X_train_stack = torch.tensor(np.stack(train_preds, axis=1), dtype=torch.float32).to(device)  # (N, M, 3)
+y_train_true = y_train_all.long().to(device)
 merged_preds = []
 
 for model_type, version in zip(model_types, version_suffixes):
@@ -190,23 +243,23 @@ for model_type, version in zip(model_types, version_suffixes):
         model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
         prob = predict_dl(model, merged_val_data)
     merged_preds.append(prob)
-
-X_val_stack = torch.tensor(np.stack(merged_preds, axis=1), dtype=torch.float32).to(device)  # (N, M, 3)
+X_val_stack = torch.tensor(np.stack(merged_preds, axis=1), dtype=torch.float32).to(device)
 y_val_true = merged_val_labels.long().to(device)
 
-ensemble = TrainableEnsemble(num_models=len(merged_preds)).to(device)
+
+ensemble = TrainableEnsemble(num_models=len(train_preds)).to(device)
 optimizer = torch.optim.Adam(ensemble.parameters(), lr=0.01)
 criterion = torch.nn.CrossEntropyLoss()
 
 for epoch in range(300):
     optimizer.zero_grad()
-    out = ensemble(X_val_stack)
-    loss = criterion(out, y_val_true)
+    out = ensemble(X_train_stack)
+    loss = criterion(out, y_train_true)
     loss.backward()
     optimizer.step()
     if epoch % 50 == 0:
-        print(f"[Ensemble] Epoch {epoch}: Loss = {loss.item():.4f}")
-
+        print(f"[Ensemble Train] Epoch {epoch}: Loss = {loss.item():.4f}")
+        
 with torch.no_grad():
     val_logits = ensemble(X_val_stack).cpu().numpy()
     val_pred = val_logits.argmax(axis=1)

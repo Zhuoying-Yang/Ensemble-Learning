@@ -217,7 +217,7 @@ for version, model_type in zip(version_suffixes, model_types):
                     best_val_loss, wait = val_loss, 0
                 else:
                     wait += 1
-                    if wait >= 30:
+                    if wait >= 60:
                         break
             torch.save(model.state_dict(), model_path)
             report_model_stats(model, (1, 2, train_X.shape[2]), model_path)

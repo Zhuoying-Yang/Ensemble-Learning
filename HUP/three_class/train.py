@@ -66,6 +66,25 @@ def predict_dl(model, X_tensor):
     return torch.cat(preds).numpy()
 
 # ========== MODEL DEFINITIONS ==========
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=None, gamma=2.0, reduction='mean'):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha  # tensor of shape (num_classes,)
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        CE_loss = nn.functional.cross_entropy(inputs, targets, reduction='none', weight=self.alpha)
+        pt = torch.exp(-CE_loss)  # prevents nans when probability is 0
+        focal_loss = (1 - pt) ** self.gamma * CE_loss
+
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+
 class CNN(nn.Module):
     def __init__(self):
         super().__init__()
@@ -183,7 +202,9 @@ for version, model_type in zip(version_suffixes, model_types):
             model.load_state_dict(torch.load(model_path, map_location=device))
         else:
             optimizer = optim.Adam(model.parameters(), lr=1e-3)
-            criterion = nn.CrossEntropyLoss()
+            alpha = torch.tensor([1.0, 1.0, 3.0], device=device)
+            criterion = FocalLoss(alpha=alpha, gamma=2.0)
+
             train_loader = DataLoader(TensorDataset(train_X, train_y), batch_size=64, shuffle=True)
 
             best_val_loss, wait = float("inf"), 0
@@ -249,7 +270,9 @@ y_val_true = merged_val_labels.long().to(device)
 
 ensemble = TrainableEnsemble(num_models=len(train_preds)).to(device)
 optimizer = torch.optim.Adam(ensemble.parameters(), lr=0.01)
-criterion = torch.nn.CrossEntropyLoss()
+alpha = torch.tensor([1.0, 1.0, 3.0], device=device)
+criterion = FocalLoss(alpha=alpha, gamma=2.0)
+
 
 for epoch in range(300):
     optimizer.zero_grad()
@@ -309,4 +332,4 @@ plt.title("Confusion Matrix - Trainable Ensemble (3-class)")
 plt.xlabel("Predicted")
 plt.ylabel("True")
 plt.tight_layout()
-plt.savefig("ensemble_confusion_matrix_HUP_multiclass.png")
+plt.savefig("ensemble_confusion_matrix_HUP_multiclass_com.png")

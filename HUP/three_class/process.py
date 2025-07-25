@@ -85,7 +85,7 @@ for folder in folders:
         # Seizure segments (label = 1)
         seizure_count = 0
         for start in grouped_seizure_starts:
-            end = start + 300 * fs
+            end = start + 120 * fs
             if end > total_len:
                 continue
             raw = eeg_all[:, start:end].copy()

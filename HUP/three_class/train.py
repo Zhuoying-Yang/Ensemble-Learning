@@ -187,7 +187,7 @@ for version, model_type in zip(version_suffixes, model_types):
     test_data_all.append(test_X)
     test_labels_all.append(test_y)
 
-    model_name = f"{model_type}_{version}_raw_three_complex"
+    model_name = f"{model_type}_{version}_raw_three_focal"
 
     if model_type == "RF":
         rf = RandomForestClassifier(n_estimators=100, max_depth=8, n_jobs=1)
@@ -332,4 +332,4 @@ plt.title("Confusion Matrix - Trainable Ensemble (3-class)")
 plt.xlabel("Predicted")
 plt.ylabel("True")
 plt.tight_layout()
-plt.savefig("ensemble_confusion_matrix_HUP_multiclass_com.png")
+plt.savefig("ensemble_confusion_matrix_HUP_multiclass_focal.png")

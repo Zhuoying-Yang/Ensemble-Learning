@@ -49,7 +49,7 @@ for folder in folders:
     try:
         mat = loadmat(label_path)
         tszr = mat.get("tszr", [])
-        seizure_starts = [int(row[0].item()) for row in tszr]
+        seizure_starts = [int(row[0].item() * fs) for row in tszr] 
         seizure_starts = sorted(seizure_starts)
         print(f"Found {len(seizure_starts)} annotated events")
     except Exception as e:
@@ -117,7 +117,7 @@ for folder in folders:
 
         # Preictal segments (label = 2), from 0–10 min before each grouped seizure
         preictal_count = 0
-        preictal_max_offset = 10 * 60 * fs
+        preictal_max_offset = 3 * 60 * fs
         for start in grouped_seizure_starts:
             pre_start = max(0, int(start - preictal_max_offset))
             pre_end = int(start)
@@ -160,7 +160,7 @@ for folder in folders:
                 labels_rep.append(2)
                 preictal_count += 1
 
-        print(f"Collected {preictal_count} preictal segments (0–5 min before grouped seizure)")
+        print(f"Collected {preictal_count} preictal segments (0–10 min before grouped seizure)")
 
         # Non-seizure segments (label = 0)
         n_non = seizure_count * non_seizure_ratio

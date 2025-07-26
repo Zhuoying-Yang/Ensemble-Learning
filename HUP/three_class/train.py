@@ -194,9 +194,18 @@ for version, model_type in zip(version_suffixes, model_types):
     model_name = f"{model_type}_{version}_raw_three_complex"
 
     if model_type == "RF":
+        rf_path = os.path.join(SAVE_DIR, f"{model_name}.joblib")
+    
+        # Force retrain: delete the existing model if it exists
+        if os.path.exists(rf_path):
+            print(f"Deleting old RF model at {rf_path}")
+            os.remove(rf_path)
+    
+        print(f"Training new RF model and saving to {rf_path}")
         rf = RandomForestClassifier(n_estimators=100, max_depth=8, n_jobs=1)
         rf.fit(train_X.reshape(len(train_X), -1).numpy(), train_y.numpy())
-        joblib.dump(rf, f"{model_name}.joblib")
+        joblib.dump(rf, rf_path)
+
     else:
         model = CNN() if model_type == "CNN" else EEGNet() if model_type == "EEGNet" else ResNet1D()
         model.to(device)

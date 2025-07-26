@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import gc
 from thop import profile, clever_format
+from scipy.stats import mode
 
 # ========== DEVICE AND PATHS ==========
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -382,7 +383,6 @@ hard_preds = [np.argmax(p, axis=1) for p in test_preds]  # list of arrays
 hard_preds = np.stack(hard_preds, axis=0)  # (M, N)
 
 # Transpose and do majority vote across axis 1 (models)
-from scipy.stats import mode
 final_pred, _ = mode(hard_preds, axis=0)
 final_pred = final_pred.flatten()  # shape (N,)
 

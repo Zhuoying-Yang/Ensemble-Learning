@@ -22,14 +22,13 @@ folders = [
 ]
 
 fs = 1024
-segment_len = 2 * 1024  # 4 seconds
+segment_len = 2 * fs  # 2 seconds
 lowcut, highcut = 0.5, 40
 three_hours = 3 * 60 * 60 * fs
 four_hours = 4 * 60 * 60 * fs
 non_seizure_ratio = 3
-
-threshold_max = 1000  # µV (relaxed for debugging)
-
+threshold_max = 1000  # µV
+gap_threshold = 2 * 60 * fs  # 2 minutes
 # -----------------------------
 # Helpers
 # -----------------------------

@@ -211,7 +211,7 @@ for version, model_type in zip(version_suffixes, model_types):
         model.to(device)
         model_path = os.path.join(SAVE_DIR, f"{model_name}.pt")
 
-        retrain = (model_type == "EEGNet") or not os.path.exists(model_path)
+        retrain = not os.path.exists(model_path)
         if retrain:
             optimizer = optim.Adam(model.parameters(), lr=1e-3)
             criterion = nn.CrossEntropyLoss()

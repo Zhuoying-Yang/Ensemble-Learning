@@ -89,6 +89,23 @@ class CNN(nn.Module):
     def forward(self, x):
         return self.model(x)
 
+class RNNModel(nn.Module):
+    def __init__(self, input_size=2, hidden_size=64, num_layers=2, num_classes=3):
+        super(RNNModel, self).__init__()
+        self.rnn = nn.GRU(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers,
+                          batch_first=True, bidirectional=True)
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_size * 2, 64),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(64, num_classes)
+        )
+
+    def forward(self, x):  # x: (B, C, T)
+        x = x.permute(0, 2, 1)  # (B, T, C)
+        out, _ = self.rnn(x)
+        out = out[:, -1, :]  # use last hidden state
+        return self.fc(out)
 
 class EEGNet(nn.Module):
     def __init__(self, num_classes=3, input_channels=2, samples=2048):
@@ -174,8 +191,9 @@ class TrainableEnsemble(nn.Module):
         return torch.einsum('mc,nmc->nc', weights, model_outputs)
 
 # ========== TRAIN INDIVIDUAL MODELS ==========
-version_suffixes = ["v1", "v2", "v3", "v4"]
-model_types = ["CNN", "EEGNet", "ResNet", "RF"]
+model_types = ["CNN", "EEGNet", "ResNet", "RNN"]
+version_suffixes = ["v1", "v2", "v3", "v4"] 
+
 
 val_data_all, val_labels_all = [], []
 test_data_all, test_labels_all = [], []
@@ -194,47 +212,39 @@ for version, model_type in zip(version_suffixes, model_types):
 
     model_name = f"{model_type}_{version}_raw_three_complex"
 
-    if model_type == "RF":
-        rf_path = os.path.join(SAVE_DIR, f"{model_name}.joblib")
-    
-        if os.path.exists(rf_path):
-            print(f"Loading pre-trained RF model from {rf_path}")
-            rf = joblib.load(rf_path)
-        else:
-            print(f"Training new RF model and saving to {rf_path}")
-            rf = RandomForestClassifier(n_estimators=100, max_depth=8, n_jobs=1)
-            rf.fit(train_X.reshape(len(train_X), -1).numpy(), train_y.numpy())
-            joblib.dump(rf, rf_path)
+    model = (
+    CNN() if model_type == "CNN" else
+    EEGNet() if model_type == "EEGNet" else
+    ResNet1D() if model_type == "ResNet" else
+    RNNModel()
+)
+    model.to(device)
+    model_path = os.path.join(SAVE_DIR, f"{model_name}.pt")
 
-
-    else:
-        model = CNN() if model_type == "CNN" else EEGNet() if model_type == "EEGNet" else ResNet1D()
-        model.to(device)
-        model_path = os.path.join(SAVE_DIR, f"{model_name}.pt")
-
-        retrain = not os.path.exists(model_path)
-        if retrain:
-            optimizer = optim.Adam(model.parameters(), lr=1e-3)
-            criterion = nn.CrossEntropyLoss()
-            train_loader = DataLoader(TensorDataset(train_X, train_y), batch_size=64, shuffle=True)
+    retrain = not os.path.exists(model_path)
+    if retrain:
+        optimizer = optim.Adam(model.parameters(), lr=1e-3)
+        criterion = nn.CrossEntropyLoss()
+        train_loader = DataLoader(TensorDataset(train_X, train_y), batch_size=64, shuffle=True)
         
-            best_val_loss, wait = float("inf"), 0
-            for epoch in range(500):
-                train(model, train_loader, criterion, optimizer)
-                if epoch % 10 == 0:
-                    val_loss, val_acc = evaluate(model, DataLoader(TensorDataset(val_X, val_y), batch_size=64), criterion)
-                    print(f"Epoch {epoch}: Val Loss={val_loss:.4f} | Val Acc={val_acc:.4f}")
-                if val_loss < best_val_loss:
-                    best_val_loss, wait = val_loss, 0
-                else:
-                    wait += 1
-                    if wait >= 80:
-                        break
-            torch.save(model.state_dict(), model_path)
-            report_model_stats(model, (1, 2, train_X.shape[2]), model_path)
-        else:
-            print(f"Loading pre-trained {model_type} model from {model_path}")
-            model.load_state_dict(torch.load(model_path, map_location=device))
+        best_val_loss, wait = float("inf"), 0
+        for epoch in range(500):
+            train(model, train_loader, criterion, optimizer)
+            if epoch % 10 == 0:
+                val_loss, val_acc = evaluate(model, DataLoader(TensorDataset(val_X, val_y), batch_size=64), criterion)
+                print(f"Epoch {epoch}: Val Loss={val_loss:.4f} | Val Acc={val_acc:.4f}")
+            if val_loss < best_val_loss:
+                best_val_loss, wait = val_loss, 0
+            else:
+                wait += 1
+                if wait >= 80:
+                    break
+        torch.save(model.state_dict(), model_path)
+        report_model_stats(model, (1, 2, train_X.shape[2]), model_path)
+        
+    else:
+        print(f"Loading pre-trained {model_type} model from {model_path}")
+        model.load_state_dict(torch.load(model_path, map_location=device))
 
     free_memory()
 
@@ -250,29 +260,16 @@ for version in version_suffixes:
 X_train_all = torch.cat(merged_train_data, dim=0)
 y_train_all = torch.cat(merged_train_labels, dim=0)
 
-# train_preds = []
-# for model_type, version in zip(model_types, version_suffixes):
-#     model_name = f"{model_type}_{version}_raw_three_complex"
-#     if model_type == "RF":
-#         rf = joblib.load(f"{model_name}.joblib")
-#         prob = rf.predict_proba(X_train_all.cpu().numpy().reshape(len(X_train_all), -1))
-#     else:
-#         cls = CNN if model_type == "CNN" else EEGNet if model_type == "EEGNet" else ResNet1D
-#         model = cls().to(device)
-#         model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
-#         prob = predict_dl(model, X_train_all)
-#     train_preds.append(prob)
-
 train_preds = []
 for model_type, version in zip(model_types, version_suffixes):
     model_name = f"{model_type}_{version}_raw_three_complex"
 
-    # Skip RF during ensemble weight training
-    if model_type == "RF":
-        print(f"[Ensemble Training] Skipping RF model: {model_name}")
-        continue
-
-    cls = CNN if model_type == "CNN" else EEGNet if model_type == "EEGNet" else ResNet1D
+    cls = (
+        CNN if model_type == "CNN" else
+        EEGNet if model_type == "EEGNet" else
+        ResNet1D if model_type == "ResNet" else
+        RNNModel
+    )
     model = cls().to(device)
     model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
     prob = predict_dl(model, X_train_all)
@@ -281,30 +278,17 @@ for model_type, version in zip(model_types, version_suffixes):
 
 X_train_stack = torch.tensor(np.stack(train_preds, axis=1), dtype=torch.float32).to(device)  # (N, M, 3)
 y_train_true = y_train_all.long().to(device)
-# merged_preds = []
-
-# for model_type, version in zip(model_types, version_suffixes):
-#     model_name = f"{model_type}_{version}_raw_three_complex"
-#     if model_type == "RF":
-#         rf = joblib.load(f"{model_name}.joblib")
-#         prob = rf.predict_proba(merged_val_data.cpu().numpy().reshape(len(merged_val_data), -1))
-#     else:
-#         cls = CNN if model_type == "CNN" else EEGNet if model_type == "EEGNet" else ResNet1D
-#         model = cls().to(device)
-#         model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
-#         prob = predict_dl(model, merged_val_data)
-#     merged_preds.append(prob)
 
 merged_preds = []
 for model_type, version in zip(model_types, version_suffixes):
     model_name = f"{model_type}_{version}_raw_three_complex"
 
-    # Skip RF during ensemble weight training
-    if model_type == "RF":
-        print(f"[Ensemble Validation] Skipping RF model: {model_name}")
-        continue
-
-    cls = CNN if model_type == "CNN" else EEGNet if model_type == "EEGNet" else ResNet1D
+    cls = (
+        CNN if model_type == "CNN" else
+        EEGNet if model_type == "EEGNet" else
+        ResNet1D if model_type == "ResNet" else
+        RNNModel
+    )
     model = cls().to(device)
     model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
     prob = predict_dl(model, merged_val_data)
@@ -352,24 +336,24 @@ trained_models = [
     ("CNN", "v1"),
     ("EEGNet", "v2"),
     ("ResNet", "v3"),
-    # ("RF", "v4"),
+    ("RNN", "v4")
 ]
 
 for model_type, version in trained_models:
     model_name = f"{model_type}_{version}_raw_three_complex"
     try:
-        if model_type == "RF":
-            rf = joblib.load(f"{model_name}.joblib")
-            prob = rf.predict_proba(X_test.cpu().numpy().reshape(len(X_test), -1))
+        cls = (
+    CNN if model_type == "CNN" else
+    EEGNet if model_type == "EEGNet" else
+    ResNet1D if model_type == "ResNet" else
+    RNNModel
+)
+        model = cls().to(device)
+        model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
+        model.eval()
+        with torch.no_grad():
+            prob = torch.softmax(model(X_test), dim=1).cpu().numpy()
             pred = np.argmax(prob, axis=1)
-        else:
-            cls = CNN if model_type == "CNN" else EEGNet if model_type == "EEGNet" else ResNet1D
-            model = cls().to(device)
-            model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
-            model.eval()
-            with torch.no_grad():
-                prob = torch.softmax(model(X_test), dim=1).cpu().numpy()
-                pred = np.argmax(prob, axis=1)
 
         acc = accuracy_score(y_test_np, pred)
         prec = precision_score(y_test_np, pred, average='macro', zero_division=0)

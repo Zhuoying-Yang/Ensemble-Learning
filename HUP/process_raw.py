@@ -22,7 +22,7 @@ folders = [
 ]
 
 fs = 1024
-segment_len = 4 * 1024  # 4 seconds
+segment_len = 2 * 1024  # 4 seconds
 lowcut, highcut = 0.5, 40
 three_hours = 3 * 60 * 60 * fs
 four_hours = 4 * 60 * 60 * fs
@@ -49,38 +49,42 @@ for folder in folders:
     try:
         mat = loadmat(label_path)
         tszr = mat.get("tszr", [])
-        seizure_starts = [int(row[0].item()) for row in tszr]
-        print(f"Found {len(seizure_starts)} annotated event(s)")
+        seizure_starts = [int(row[0].item() * fs) for row in tszr] 
+        seizure_starts = sorted(seizure_starts)
+        print(f"Found {len(seizure_starts)} annotated events")
     except Exception as e:
         print(f"Failed to load label: {e}")
         continue
 
-    print(f"Reading LEAR1.mat and REAR1.mat...")
+    print("Reading LEAR1.mat and REAR1.mat...")
     try:
-        # Load LEAR1
         with h5py.File(os.path.join(folder_path, "LEAR1.mat"), 'r') as f:
             eeg_lear1 = np.squeeze(f[list(f.keys())[0]][()])
-
-        # Load REAR1
         with h5py.File(os.path.join(folder_path, "REAR1.mat"), 'r') as f:
             eeg_rear1 = np.squeeze(f[list(f.keys())[0]][()])
 
         min_len = min(len(eeg_lear1), len(eeg_rear1))
         eeg_all = np.stack([eeg_lear1[:min_len], eeg_rear1[:min_len]], axis=0)
-
     except Exception as e:
         print(f"Failed to load EEG pair: {e}")
         continue
 
     total_len = eeg_all.shape[1]
 
+    # ----------- Group close seizure events -----------
+    grouped_seizure_starts = []
+    for s in seizure_starts:
+        if not grouped_seizure_starts or s - grouped_seizure_starts[-1] > gap_threshold:
+            grouped_seizure_starts.append(s)
+    print(f"Grouped into {len(grouped_seizure_starts)} seizure events")
+
     for rep in range(4):
         print(f"\nPreparing dataset version {rep+1}/4...")
         segments_rep, labels_rep = [], []
 
-        # Seizure segments
+        # Seizure segments (label = 1)
         seizure_count = 0
-        for start in seizure_starts:
+        for start in grouped_seizure_starts:
             end = start + 120 * fs
             if end > total_len:
                 continue
@@ -111,7 +115,7 @@ for folder in folders:
 
         print(f"Collected {seizure_count} seizure segments")
 
-        # Non-seizure segments
+        # Non-seizure segments (label = 0)
         n_non = seizure_count * non_seizure_ratio
         non_idxs, attempts = set(), 0
         while len(non_idxs) < n_non and attempts < 200000:

@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, accuracy_score, precision_score, recall_score
+from sklearn.metrics import classification_report, accuracy_score, precision_score, recall_score, confusion_matrix
 import joblib
 import matplotlib.pyplot as plt
 import seaborn as sns

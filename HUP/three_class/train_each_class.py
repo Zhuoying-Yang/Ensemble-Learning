@@ -89,23 +89,51 @@ class CNN(nn.Module):
     def forward(self, x):
         return self.model(x)
 
-class RNNModel(nn.Module):
-    def __init__(self, input_size=2, hidden_size=64, num_layers=2, num_classes=3):
-        super(RNNModel, self).__init__()
-        self.rnn = nn.GRU(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers,
-                          batch_first=True, bidirectional=True)
+class InceptionBlock1D(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_sizes=[9, 19, 39], bottleneck_channels=32):
+        super().__init__()
+        self.bottleneck = nn.Conv1d(in_channels, bottleneck_channels, kernel_size=1, bias=False)
+        self.conv_list = nn.ModuleList([
+            nn.Conv1d(bottleneck_channels, out_channels, kernel_size=k, padding=k//2, bias=False)
+            for k in kernel_sizes
+        ])
+        self.maxpool = nn.Sequential(
+            nn.MaxPool1d(kernel_size=3, stride=1, padding=1),
+            nn.Conv1d(in_channels, out_channels, kernel_size=1, bias=False)
+        )
+        self.bn = nn.BatchNorm1d(out_channels * (len(kernel_sizes)+1))
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        x_bottleneck = self.bottleneck(x)
+        conv_outputs = [conv(x_bottleneck) for conv in self.conv_list]
+        pool_output = self.maxpool(x)
+        out = torch.cat(conv_outputs + [pool_output], dim=1)
+        return self.relu(self.bn(out))
+
+
+class InceptionTime(nn.Module):
+    def __init__(self, in_channels=2, num_blocks=3, out_channels=32, bottleneck_channels=32, num_classes=3):
+        super().__init__()
+        blocks = []
+        for _ in range(num_blocks):
+            blocks.append(InceptionBlock1D(in_channels if not blocks else out_channels * 4,
+                                           out_channels,
+                                           bottleneck_channels=bottleneck_channels))
+        self.inception_blocks = nn.Sequential(*blocks)
+        self.gap = nn.AdaptiveAvgPool1d(1)
         self.fc = nn.Sequential(
-            nn.Linear(hidden_size * 2, 64),
+            nn.Flatten(),
+            nn.Linear(out_channels * 4, 64),
             nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.2),
             nn.Linear(64, num_classes)
         )
 
     def forward(self, x):  # x: (B, C, T)
-        x = x.permute(0, 2, 1)  # (B, T, C)
-        out, _ = self.rnn(x)
-        out = out[:, -1, :]  # use last hidden state
-        return self.fc(out)
+        x = self.inception_blocks(x)
+        x = self.gap(x)
+        return self.fc(x)
 
 class EEGNet(nn.Module):
     def __init__(self, num_classes=3, input_channels=2, samples=2048):
@@ -191,7 +219,7 @@ class TrainableEnsemble(nn.Module):
         return torch.einsum('mc,nmc->nc', weights, model_outputs)
 
 # ========== TRAIN INDIVIDUAL MODELS ==========
-model_types = ["CNN", "EEGNet", "ResNet", "RNN"]
+model_types = ["CNN", "EEGNet", "ResNet", "InceptionTime"]
 version_suffixes = ["v1", "v2", "v3", "v4"] 
 
 
@@ -216,7 +244,7 @@ for version, model_type in zip(version_suffixes, model_types):
     CNN() if model_type == "CNN" else
     EEGNet() if model_type == "EEGNet" else
     ResNet1D() if model_type == "ResNet" else
-    RNNModel()
+    InceptionTime()
 )
     model.to(device)
     model_path = os.path.join(SAVE_DIR, f"{model_name}.pt")
@@ -268,7 +296,7 @@ for model_type, version in zip(model_types, version_suffixes):
         CNN if model_type == "CNN" else
         EEGNet if model_type == "EEGNet" else
         ResNet1D if model_type == "ResNet" else
-        RNNModel
+        InceptionTime
     )
     model = cls().to(device)
     model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
@@ -287,7 +315,7 @@ for model_type, version in zip(model_types, version_suffixes):
         CNN if model_type == "CNN" else
         EEGNet if model_type == "EEGNet" else
         ResNet1D if model_type == "ResNet" else
-        RNNModel
+        InceptionTime
     )
     model = cls().to(device)
     model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
@@ -336,7 +364,7 @@ trained_models = [
     ("CNN", "v1"),
     ("EEGNet", "v2"),
     ("ResNet", "v3"),
-    ("RNN", "v4")
+    ("InceptionTime", "v4")
 ]
 
 for model_type, version in trained_models:
@@ -346,7 +374,7 @@ for model_type, version in trained_models:
     CNN if model_type == "CNN" else
     EEGNet if model_type == "EEGNet" else
     ResNet1D if model_type == "ResNet" else
-    RNNModel
+    InceptionTime
 )
         model = cls().to(device)
         model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
@@ -398,7 +426,7 @@ print("\n=== Per-Class Ensemble Weights ===")
 print(df.round(4))
 
 # ========== SAVE RESULTS ==========
-with open("hybrid_classification_report_HUP_trainable_multiclass_com.txt", "w") as f:
+with open("hybrid_classification_report_HUP_trainable_multiclass_com_four.txt", "w") as f:
     f.write("Trainable ensemble weights:\n")
     f.write(str(torch.softmax(ensemble.raw_weights, dim=0).cpu().detach().numpy()))
     f.write("\n\n" + report)

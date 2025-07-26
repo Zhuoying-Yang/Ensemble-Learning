@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report, accuracy_score, precision_score, recall_score
 import joblib
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -294,19 +294,36 @@ report = classification_report(y_true, val_pred, digits=4)
 # ========== PREDICT ON TEST SET ==========
 X_test, y_test = torch.load(f"{PREPROCESSED_DIR}/merged_test_raw_three.pt")
 X_test, y_test = X_test.to(device), y_test.to(device)
+y_test_np = y_test.cpu().numpy()
 
 test_preds = []
+
+print("\n========== Individual Model Test Performance ==========")
 for model_type, version in zip(model_types, version_suffixes):
     model_name = f"{model_type}_{version}_raw_three_complex"
+
     if model_type == "RF":
         rf = joblib.load(f"{model_name}.joblib")
         prob = rf.predict_proba(X_test.cpu().numpy().reshape(len(X_test), -1))
+        pred = np.argmax(prob, axis=1)
     else:
         cls = CNN if model_type == "CNN" else EEGNet if model_type == "EEGNet" else ResNet1D
         model = cls().to(device)
         model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
-        prob = predict_dl(model, X_test)
+        model.eval()
+        with torch.no_grad():
+            prob = torch.softmax(model(X_test), dim=1).cpu().numpy()
+            pred = np.argmax(prob, axis=1)
+
+    # Store prediction for ensemble
     test_preds.append(prob)
+
+    # Print metrics
+    acc = accuracy_score(y_test_np, pred)
+    prec = precision_score(y_test_np, pred, average='macro', zero_division=0)
+    rec = recall_score(y_test_np, pred, average='macro', zero_division=0)
+
+    print(f"{model_type} ({version}) → Accuracy: {acc:.4f} | Precision: {prec:.4f} | Recall: {rec:.4f}")
 
 X_test_stack = torch.tensor(np.stack(test_preds, axis=1), dtype=torch.float32).to(device)
 

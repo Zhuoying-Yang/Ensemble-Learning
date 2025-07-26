@@ -108,22 +108,44 @@ class CNN(nn.Module):
         return self.model(x)
 
 
-class TransformerModel(nn.Module):
-    def __init__(self, input_dim=2, seq_len=256, d_model=64, nhead=4, num_layers=2):
-        super().__init__()
-        self.input_proj = nn.Linear(input_dim, d_model)
-        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dropout=0.3, batch_first=True)
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        self.fc = nn.Linear(d_model, 3)
-        self.seq_len = seq_len
+class EEGNet(nn.Module):
+    def __init__(self, num_classes=3, input_channels=2, samples=2048):
+        super(EEGNet, self).__init__()
+        self.firstconv = nn.Sequential(
+            nn.Conv2d(1, 8, kernel_size=(1, 64), padding=(0, 32), bias=False),
+            nn.BatchNorm2d(8)
+        )
+        self.depthwiseConv = nn.Sequential(
+            nn.Conv2d(8, 16, kernel_size=(input_channels, 1), groups=8, bias=False),
+            nn.BatchNorm2d(16),
+            nn.ELU(),
+            nn.MaxPool2d(kernel_size=(1, 4)),
+            nn.Dropout(0.25)
+        )
+        self.separableConv = nn.Sequential(
+            nn.Conv2d(16, 16, kernel_size=(1, 16), padding=(0, 8), bias=False),
+            nn.BatchNorm2d(16),
+            nn.ELU(),
+            nn.MaxPool2d(kernel_size=(1, 8)),
+            nn.Dropout(0.25)
+        )
+        # Compute the flattened feature size
+        dummy_input = torch.zeros(1, 1, input_channels, samples)
+        out = self._forward_features(dummy_input)
+        self.classify = nn.Linear(out.shape[1], num_classes)
+
+    def _forward_features(self, x):
+        x = self.firstconv(x)
+        x = self.depthwiseConv(x)
+        x = self.separableConv(x)
+        x = x.view(x.size(0), -1)
+        return x
 
     def forward(self, x):
-        x = x.permute(0, 2, 1)
-        x = self.input_proj(x)
-        x = self.transformer_encoder(x)
-        x = x.mean(dim=1)
-        return self.fc(x)
-
+        x = x.unsqueeze(1)  # (B, 1, C, T)
+        x = self._forward_features(x)
+        return self.classify(x)
+        
 class ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
@@ -170,7 +192,7 @@ class TrainableEnsemble(nn.Module):
 
 # ========== TRAIN INDIVIDUAL MODELS ==========
 version_suffixes = ["v1", "v2", "v3", "v4"]
-model_types = ["CNN", "Transformer", "ResNet", "RF"]
+model_types = ["CNN", "EEGNet", "ResNet", "RF"]
 
 val_data_all, val_labels_all = [], []
 test_data_all, test_labels_all = [], []
@@ -194,7 +216,7 @@ for version, model_type in zip(version_suffixes, model_types):
         rf.fit(train_X.reshape(len(train_X), -1).numpy(), train_y.numpy())
         joblib.dump(rf, f"{model_name}.joblib")
     else:
-        model = CNN() if model_type == "CNN" else TransformerModel() if model_type == "Transformer" else ResNet1D()
+        model = CNN() if model_type == "CNN" else EEGNet() if model_type == "EEGNet" else ResNet1D()
         model.to(device)
         model_path = os.path.join(SAVE_DIR, f"{model_name}.pt")
 
@@ -202,7 +224,7 @@ for version, model_type in zip(version_suffixes, model_types):
             model.load_state_dict(torch.load(model_path, map_location=device))
         else:
             optimizer = optim.Adam(model.parameters(), lr=1e-3)
-            alpha = torch.tensor([1.0, 1.0, 3.0], device=device)
+            alpha = torch.tensor([1.0, 2.0, 2.0], device=device)
             criterion = FocalLoss(alpha=alpha, gamma=2.0)
 
             train_loader = DataLoader(TensorDataset(train_X, train_y), batch_size=64, shuffle=True)
@@ -243,7 +265,7 @@ for model_type, version in zip(model_types, version_suffixes):
         rf = joblib.load(f"{model_name}.joblib")
         prob = rf.predict_proba(X_train_all.cpu().numpy().reshape(len(X_train_all), -1))
     else:
-        cls = CNN if model_type == "CNN" else TransformerModel if model_type == "Transformer" else ResNet1D
+        cls = CNN if model_type == "CNN" else EEGNet if model_type == "EEGNet" else ResNet1D
         model = cls().to(device)
         model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
         prob = predict_dl(model, X_train_all)
@@ -259,7 +281,7 @@ for model_type, version in zip(model_types, version_suffixes):
         rf = joblib.load(f"{model_name}.joblib")
         prob = rf.predict_proba(merged_val_data.cpu().numpy().reshape(len(merged_val_data), -1))
     else:
-        cls = CNN if model_type == "CNN" else TransformerModel if model_type == "Transformer" else ResNet1D
+        cls = CNN if model_type == "CNN" else EEGNet if model_type == "EEGNet" else ResNet1D
         model = cls().to(device)
         model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
         prob = predict_dl(model, merged_val_data)
@@ -302,7 +324,7 @@ for model_type, version in zip(model_types, version_suffixes):
         rf = joblib.load(f"{model_name}.joblib")
         prob = rf.predict_proba(X_test.cpu().numpy().reshape(len(X_test), -1))
     else:
-        cls = CNN if model_type == "CNN" else TransformerModel if model_type == "Transformer" else ResNet1D
+        cls = CNN if model_type == "CNN" else EEGNet if model_type == "EEGNet" else ResNet1D
         model = cls().to(device)
         model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
         prob = predict_dl(model, X_test)

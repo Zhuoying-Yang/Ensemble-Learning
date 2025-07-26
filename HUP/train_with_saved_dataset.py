@@ -203,7 +203,7 @@ for version, model_type in zip(version_suffixes, model_types):
     model_path = os.path.join(SAVE_DIR, f"{model_name}.pt")
 
     retrain = not os.path.exists(model_path)
-    # retrain = TRUE
+    # retrain = True
     if retrain:
         optimizer = optim.Adam(model.parameters(), lr=1e-3)
         criterion = nn.CrossEntropyLoss()

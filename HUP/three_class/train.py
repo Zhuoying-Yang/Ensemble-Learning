@@ -211,13 +211,12 @@ for version, model_type in zip(version_suffixes, model_types):
         model.to(device)
         model_path = os.path.join(SAVE_DIR, f"{model_name}.pt")
 
-        if os.path.exists(model_path):
-            model.load_state_dict(torch.load(model_path, map_location=device))
-        else:
+        retrain = (model_type == "EEGNet") or not os.path.exists(model_path)
+        if retrain:
             optimizer = optim.Adam(model.parameters(), lr=1e-3)
             criterion = nn.CrossEntropyLoss()
             train_loader = DataLoader(TensorDataset(train_X, train_y), batch_size=64, shuffle=True)
-
+        
             best_val_loss, wait = float("inf"), 0
             for epoch in range(500):
                 train(model, train_loader, criterion, optimizer)
@@ -228,10 +227,13 @@ for version, model_type in zip(version_suffixes, model_types):
                     best_val_loss, wait = val_loss, 0
                 else:
                     wait += 1
-                    if wait >= 30:
+                    if wait >= 80:
                         break
             torch.save(model.state_dict(), model_path)
             report_model_stats(model, (1, 2, train_X.shape[2]), model_path)
+        else:
+            print(f"Loading pre-trained {model_type} model from {model_path}")
+            model.load_state_dict(torch.load(model_path, map_location=device))
 
     free_memory()
 
@@ -247,34 +249,66 @@ for version in version_suffixes:
 X_train_all = torch.cat(merged_train_data, dim=0)
 y_train_all = torch.cat(merged_train_labels, dim=0)
 
+# train_preds = []
+# for model_type, version in zip(model_types, version_suffixes):
+#     model_name = f"{model_type}_{version}_raw_three_complex"
+#     if model_type == "RF":
+#         rf = joblib.load(f"{model_name}.joblib")
+#         prob = rf.predict_proba(X_train_all.cpu().numpy().reshape(len(X_train_all), -1))
+#     else:
+#         cls = CNN if model_type == "CNN" else EEGNet if model_type == "EEGNet" else ResNet1D
+#         model = cls().to(device)
+#         model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
+#         prob = predict_dl(model, X_train_all)
+#     train_preds.append(prob)
+
 train_preds = []
 for model_type, version in zip(model_types, version_suffixes):
     model_name = f"{model_type}_{version}_raw_three_complex"
+
+    # Skip RF during ensemble weight training
     if model_type == "RF":
-        rf = joblib.load(f"{model_name}.joblib")
-        prob = rf.predict_proba(X_train_all.cpu().numpy().reshape(len(X_train_all), -1))
-    else:
-        cls = CNN if model_type == "CNN" else EEGNet if model_type == "EEGNet" else ResNet1D
-        model = cls().to(device)
-        model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
-        prob = predict_dl(model, X_train_all)
+        print(f"[Ensemble Training] Skipping RF model: {model_name}")
+        continue
+
+    cls = CNN if model_type == "CNN" else EEGNet if model_type == "EEGNet" else ResNet1D
+    model = cls().to(device)
+    model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
+    prob = predict_dl(model, X_train_all)
     train_preds.append(prob)
+
 
 X_train_stack = torch.tensor(np.stack(train_preds, axis=1), dtype=torch.float32).to(device)  # (N, M, 3)
 y_train_true = y_train_all.long().to(device)
-merged_preds = []
+# merged_preds = []
 
+# for model_type, version in zip(model_types, version_suffixes):
+#     model_name = f"{model_type}_{version}_raw_three_complex"
+#     if model_type == "RF":
+#         rf = joblib.load(f"{model_name}.joblib")
+#         prob = rf.predict_proba(merged_val_data.cpu().numpy().reshape(len(merged_val_data), -1))
+#     else:
+#         cls = CNN if model_type == "CNN" else EEGNet if model_type == "EEGNet" else ResNet1D
+#         model = cls().to(device)
+#         model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
+#         prob = predict_dl(model, merged_val_data)
+#     merged_preds.append(prob)
+
+merged_preds = []
 for model_type, version in zip(model_types, version_suffixes):
     model_name = f"{model_type}_{version}_raw_three_complex"
+
+    # Skip RF during ensemble weight training
     if model_type == "RF":
-        rf = joblib.load(f"{model_name}.joblib")
-        prob = rf.predict_proba(merged_val_data.cpu().numpy().reshape(len(merged_val_data), -1))
-    else:
-        cls = CNN if model_type == "CNN" else EEGNet if model_type == "EEGNet" else ResNet1D
-        model = cls().to(device)
-        model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
-        prob = predict_dl(model, merged_val_data)
+        print(f"[Ensemble Validation] Skipping RF model: {model_name}")
+        continue
+
+    cls = CNN if model_type == "CNN" else EEGNet if model_type == "EEGNet" else ResNet1D
+    model = cls().to(device)
+    model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
+    prob = predict_dl(model, merged_val_data)
     merged_preds.append(prob)
+
 X_val_stack = torch.tensor(np.stack(merged_preds, axis=1), dtype=torch.float32).to(device)
 y_val_true = merged_val_labels.long().to(device)
 

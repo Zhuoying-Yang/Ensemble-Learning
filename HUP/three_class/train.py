@@ -351,7 +351,7 @@ trained_models = [
     ("CNN", "v1"),
     ("EEGNet", "v2"),
     ("ResNet", "v3"),
-    ("RF", "v4"),
+    # ("RF", "v4"),
 ]
 
 for model_type, version in trained_models:

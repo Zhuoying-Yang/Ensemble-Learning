@@ -100,14 +100,14 @@ class EEGNet(nn.Module):
             nn.Conv2d(8, 16, kernel_size=(input_channels, 1), groups=8, bias=False),
             nn.BatchNorm2d(16),
             nn.ELU(),
-            nn.AvgPool2d(kernel_size=(1, 4)),
+            nn.MaxPool2d(kernel_size=(1, 4)),
             nn.Dropout(0.25)
         )
         self.separableConv = nn.Sequential(
             nn.Conv2d(16, 16, kernel_size=(1, 16), padding=(0, 8), bias=False),
             nn.BatchNorm2d(16),
             nn.ELU(),
-            nn.AvgPool2d(kernel_size=(1, 8)),
+            nn.MaxPool2d(kernel_size=(1, 8)),
             nn.Dropout(0.25)
         )
         # Compute the flattened feature size
@@ -196,15 +196,15 @@ for version, model_type in zip(version_suffixes, model_types):
     if model_type == "RF":
         rf_path = os.path.join(SAVE_DIR, f"{model_name}.joblib")
     
-        # Force retrain: delete the existing model if it exists
         if os.path.exists(rf_path):
-            print(f"Deleting old RF model at {rf_path}")
-            os.remove(rf_path)
-    
-        print(f"Training new RF model and saving to {rf_path}")
-        rf = RandomForestClassifier(n_estimators=100, max_depth=8, n_jobs=1)
-        rf.fit(train_X.reshape(len(train_X), -1).numpy(), train_y.numpy())
-        joblib.dump(rf, rf_path)
+            print(f"Loading pre-trained RF model from {rf_path}")
+            rf = joblib.load(rf_path)
+        else:
+            print(f"Training new RF model and saving to {rf_path}")
+            rf = RandomForestClassifier(n_estimators=100, max_depth=8, n_jobs=1)
+            rf.fit(train_X.reshape(len(train_X), -1).numpy(), train_y.numpy())
+            joblib.dump(rf, rf_path)
+
 
     else:
         model = CNN() if model_type == "CNN" else EEGNet() if model_type == "EEGNet" else ResNet1D()
@@ -283,14 +283,19 @@ ensemble = TrainableEnsemble(num_models=len(train_preds)).to(device)
 optimizer = torch.optim.Adam(ensemble.parameters(), lr=0.01)
 criterion = torch.nn.CrossEntropyLoss()
 
+lambda_reg = 1e-2 
+
 for epoch in range(300):
     optimizer.zero_grad()
     out = ensemble(X_train_stack)
-    loss = criterion(out, y_train_true)
+    ce_loss = criterion(out, y_train_true)
+    reg_loss = lambda_reg * torch.norm(ensemble.raw_weights, p=2)
+    loss = ce_loss + reg_loss
     loss.backward()
     optimizer.step()
+
     if epoch % 50 == 0:
-        print(f"[Ensemble Train] Epoch {epoch}: Loss = {loss.item():.4f}")
+        print(f"[Ensemble Train] Epoch {epoch}: Loss = {loss.item():.4f} | CE = {ce_loss.item():.4f} | Reg = {reg_loss.item():.4f}")
         
 with torch.no_grad():
     val_logits = ensemble(X_val_stack).cpu().numpy()

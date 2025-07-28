@@ -167,7 +167,8 @@ for folder in folders:
                 if np.max(np.abs(seg)) > threshold_max:
                     continue
                 features = extract_features(seg)
-                features_rep.append(features)
+                features_cnn = np.array(features).reshape(2, 5)
+                features_rep.append(features_cnn)
                 labels_rep.append(2)
                 preictal_count += 1
 

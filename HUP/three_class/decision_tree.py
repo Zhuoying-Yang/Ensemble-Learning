@@ -25,7 +25,7 @@ X_test  = test_X.reshape(len(test_X), -1).numpy()
 y_test  = test_y.numpy()
 
 # ========== TRAIN DECISION TREE ==========
-tree = DecisionTreeClassifier(max_depth=8, class_weight={0:5, 1:1, 2:1}, random_state=42)
+tree = DecisionTreeClassifier(max_depth=8, class_weight={0:0.5, 1:1, 2:1}, random_state=42)
 tree.fit(X_train, y_train)
 
 # ========== SAVE MODEL ==========

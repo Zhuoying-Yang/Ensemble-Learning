@@ -39,15 +39,38 @@ def bandpass(signal, lowcut, highcut, fs, order=4):
     sos = butter(order, [lowcut / nyq, highcut / nyq], btype='band', output='sos')
     return sosfiltfilt(sos, signal)
 
-def extract_features(seg):
+from scipy.signal import welch
+
+def extract_features(seg, fs=1024):
     features = []
     for ch_data in seg:
+        # Time-domain features
+        ch_data = np.asarray(ch_data)
+        ch_abs = np.abs(ch_data)
         features.extend([
             np.mean(ch_data),
             np.std(ch_data),
-            entropy(np.abs(ch_data) + 1e-8),
+            np.max(ch_data),
+            np.min(ch_data),
+            np.median(ch_data),
+            entropy(ch_abs + 1e-8),
             kurtosis(ch_data),
-            skew(ch_data)
+            skew(ch_data),
+            np.sum(ch_data ** 2),  # Energy
+            ((ch_data[:-1] * ch_data[1:]) < 0).sum(),  # Zero-crossings
+        ])
+
+        # Frequency-domain features (bandpower)
+        f, psd = welch(ch_data, fs=fs, nperseg=fs//2)
+        def bandpower(low, high):
+            return np.trapz(psd[(f >= low) & (f <= high)], f[(f >= low) & (f <= high)])
+        
+        features.extend([
+            bandpower(0.5, 4),   # Delta
+            bandpower(4, 8),     # Theta
+            bandpower(8, 13),    # Alpha
+            bandpower(13, 30),   # Beta
+            bandpower(30, 40),   # Low Gamma
         ])
     return features
 

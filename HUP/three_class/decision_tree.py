@@ -11,9 +11,9 @@ SAVE_DIR = os.path.expanduser("~/models_link")
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 # ========== LOAD DATA ==========
-train_X, train_y = torch.load(f"{PREPROCESSED_DIR}/train_v4_raw_three.pt")
-val_X, val_y = torch.load(f"{PREPROCESSED_DIR}/val_v4_raw_three.pt")
-test_X, test_y = torch.load(f"{PREPROCESSED_DIR}/merged_test_raw_three.pt")
+train_X, train_y = torch.load(f"{PREPROCESSED_DIR}/train_v4_feature_three.pt")
+val_X, val_y = torch.load(f"{PREPROCESSED_DIR}/val_v4_feature_three.pt")
+test_X, test_y = torch.load(f"{PREPROCESSED_DIR}/merged_test_feature_three.pt")
 
 # Flatten input
 X_train = train_X.reshape(len(train_X), -1).numpy()

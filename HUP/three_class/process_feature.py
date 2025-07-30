@@ -63,7 +63,7 @@ def extract_features(seg, fs=1024):
             bandpower(8, 13), bandpower(13, 30),
             bandpower(30, 40)
         ])
-    return np.array(features).reshape(2, 5)
+    return np.array(features, dtype=np.float32)  # flat, no reshape
 
 # -----------------------------
 # MAIN EXTRACTION
@@ -81,7 +81,7 @@ for folder in folders:
         mat = loadmat(label_path)
         seizure_starts = sorted([int(row[0].item() * fs) for row in mat.get("tszr", [])])
     except:
-        print(f"Failed to load label for {folder}")
+        print(f"⚠️ Failed to load label for {folder}")
         continue
 
     try:
@@ -92,7 +92,7 @@ for folder in folders:
         min_len = min(len(eeg_lear1), len(eeg_rear1))
         eeg_all = np.stack([eeg_lear1[:min_len], eeg_rear1[:min_len]], axis=0)
     except:
-        print(f"Failed to load EEG files for {folder}")
+        print(f"⚠️ Failed to load EEG files for {folder}")
         continue
 
     total_len = eeg_all.shape[1]
@@ -182,8 +182,7 @@ for folder in folders:
         X_trainval, X_test, y_trainval, y_test = train_test_split(X, y, test_size=0.08, stratify=y, random_state=42)
         X_train, X_val, y_train, y_val = train_test_split(X_trainval, y_trainval, test_size=0.1/0.92, stratify=y_trainval, random_state=42)
         smote = SMOTE(random_state=42)
-        X_train_sm, y_train_sm = smote.fit_resample(X_train.reshape(len(X_train), -1), y_train)
-        X_train_sm = X_train_sm.reshape(-1, 2, 5)
+        X_train_sm, y_train_sm = smote.fit_resample(X_train, y_train)
 
         base = f"{folder}_LEAR1_REAR1_v{rep+1}_feature_change_three"
         torch.save((torch.tensor(X_train_sm), torch.tensor(y_train_sm)), f"{save_dir}/train_{base}.pt")

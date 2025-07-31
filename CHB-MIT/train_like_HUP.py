@@ -71,7 +71,7 @@ def predict_dl(model, X_tensor, batch_size=64):
             preds.append(prob.cpu())
     return torch.cat(preds).numpy()
 
-# ========== UPDATED MODEL ARCHITECTURES (FROM HUP) ==========
+# ========== UPDATED MODEL ARCHITECTURES ==========
 class CNN(nn.Module):
     def __init__(self, in_channels=23, num_classes=2):
         super().__init__()
@@ -160,13 +160,10 @@ class EEGNet(nn.Module):
         return x
 
     def forward(self, x):
-        # The input x is expected to be (batch_size, channels, samples)
-        # Reshape to (batch_size, 1, channels, samples) for Conv2d
         x = x.unsqueeze(1)
         x = self._forward_features(x)
         return self.classify(x)
 
-# UPDATED TRAINABLE ENSEMBLE (FROM HUP)
 class TrainableEnsemble(nn.Module):
     def __init__(self, num_models, num_classes=2):
         super().__init__()
@@ -179,14 +176,10 @@ class TrainableEnsemble(nn.Module):
 # ========== MAIN TRAINING AND EVALUATION ==========
 version_suffixes = ["_v1", "_v2", "_v3"]
 model_types = ["CNN", "EEGNet", "ResNet"]
-test_data_all = []
-test_labels_all = []
-val_labels_all = []
-val_data_all = []
-model_preds_val = []
+val_data_all, val_labels_all = [], []
+test_data_all, test_labels_all = [], []
 all_trained_models = []
 
-# --- ADDED: FILE TO SAVE INDIVIDUAL MODEL METRICS ---
 individual_model_report_path = os.path.join(SAVE_DIR, "individual_model_performance.txt")
 with open(individual_model_report_path, "w") as f:
     f.write("Individual Model Performance on Test Sets\n")
@@ -220,15 +213,11 @@ for version, model_type in zip(version_suffixes, model_types):
     X_train_sm, y_train_sm = smote.fit_resample(X_train.reshape(len(X_train), -1), y_train)
     X_train_sm = X_train_sm.reshape(-1, num_channels, num_samples)
 
-    X_val_tensor = torch.tensor(X_val, dtype=torch.float32)
-    y_val_tensor = torch.tensor(y_val, dtype=torch.long)
-    val_data_all.append(X_val_tensor)
-    val_labels_all.append(y_val_tensor)
-
-    # Accumulate all test data
+    val_data_all.append(torch.tensor(X_val, dtype=torch.float32))
+    val_labels_all.append(torch.tensor(y_val, dtype=torch.long))
     test_data_all.append(torch.tensor(X_test, dtype=torch.float32))
     test_labels_all.append(torch.tensor(y_test, dtype=torch.long))
-    
+
     model = CNN(in_channels=num_channels) if model_type == "CNN" else ResNet1D(in_channels=num_channels) if model_type == "ResNet" else EEGNet(input_channels=num_channels, samples=num_samples)
     model.to(device)
     model_path = os.path.join(SAVE_DIR, f"{model_type}_{version}_mit.pt")
@@ -244,8 +233,7 @@ for version, model_type in zip(version_suffixes, model_types):
     for epoch in range(500):
         train(model, train_loader, criterion, optimizer)
         if epoch % 10 == 0:
-            val_loader = DataLoader(TensorDataset(X_val_tensor, y_val_tensor), batch_size=64)
-            val_loss, val_acc = evaluate(model, val_loader, criterion)
+            val_loss, val_acc = evaluate(model, DataLoader(TensorDataset(val_data_all[-1], val_labels_all[-1]), batch_size=64), criterion)
             print(f"Epoch {epoch}: Val Loss={val_loss:.4f} | Val Acc={val_acc:.4f}")
         if val_loss < best_val_loss:
             best_val_loss, wait = val_loss, 0
@@ -256,15 +244,12 @@ for version, model_type in zip(version_suffixes, model_types):
                 break
     
     model.load_state_dict(torch.load(model_path, map_location=device))
-    all_trained_models.append(model) # Store the trained models
+    all_trained_models.append(model)
     
-    val_preds = predict_dl(model, X_val_tensor)
-    model_preds_val.append(val_preds)
-    
-    test_preds_prob = predict_dl(model, torch.tensor(X_test, dtype=torch.float32))
+    # Individual model evaluation on its own test set
+    test_preds_prob = predict_dl(model, test_data_all[-1])
     test_preds_labels = np.argmax(test_preds_prob, axis=1)
-    
-    report_text = classification_report(y_test, test_preds_labels, digits=4)
+    report_text = classification_report(test_labels_all[-1].cpu().numpy(), test_preds_labels, digits=4)
     print(f"\nIndividual Test Set Performance for {model_type} on {version}:")
     print(report_text)
     
@@ -279,21 +264,25 @@ for version, model_type in zip(version_suffixes, model_types):
         dummy_input_shape = (1, num_channels, num_samples)
 
     report_model_stats(model, dummy_input_shape, f"{model_type}_{version}")
-    
     free_memory()
 
+
 # ========== ENSEMBLE TRAINING ON MERGED VALIDATION SET ==========
-print("\nPreparing merged validation set...")
+print("\nPreparing merged validation set for ensemble training...")
 X_val_merged = torch.cat(val_data_all, dim=0)
 y_val_merged = torch.cat(val_labels_all, dim=0)
 
-min_len_val = min(len(p) for p in model_preds_val)
-truncated_val_preds = [p[:min_len_val] for p in model_preds_val]
-model_val_preds_tensor = torch.tensor(np.stack(truncated_val_preds, axis=1), dtype=torch.float32).to(device)
-y_val_combined = y_val_merged[:min_len_val].long().to(device)
+# Get predictions from each trained model on the merged validation set
+ensemble_val_preds = []
+for model in all_trained_models:
+    preds_on_merged_val = predict_dl(model, X_val_merged)
+    ensemble_val_preds.append(preds_on_merged_val)
 
-print("\nTraining trainable ensemble on merged validation set...")
-ensemble_model = TrainableEnsemble(num_models=model_val_preds_tensor.shape[1]).to(device)
+X_val_stack = torch.tensor(np.stack(ensemble_val_preds, axis=1), dtype=torch.float32).to(device) # (N_val, M, 2)
+y_val_true = y_val_merged.long().to(device)
+
+print(f"\nTraining trainable ensemble on merged validation set (data shape: {X_val_stack.shape})...")
+ensemble_model = TrainableEnsemble(num_models=len(all_trained_models), num_classes=2).to(device)
 optimizer = torch.optim.Adam(ensemble_model.parameters(), lr=0.01)
 criterion = nn.CrossEntropyLoss()
 lambda_reg = 1e-2 
@@ -301,12 +290,13 @@ lambda_reg = 1e-2
 best_loss = float('inf')
 wait = 0
 patience = 20
+ensemble_path = os.path.join(SAVE_DIR, "TrainableEnsemble_CHBMIT.pt")
 
 for epoch in range(300):
     ensemble_model.train()
     optimizer.zero_grad()
-    out = ensemble_model(model_val_preds_tensor)
-    ce_loss = criterion(out, y_val_combined)
+    out = ensemble_model(X_val_stack)
+    ce_loss = criterion(out, y_val_true)
     reg_loss = lambda_reg * torch.norm(ensemble_model.raw_weights, p=2)
     loss = ce_loss + reg_loss
     loss.backward()
@@ -318,13 +308,16 @@ for epoch in range(300):
     if loss.item() < best_loss:
         best_loss = loss.item()
         wait = 0
+        torch.save(ensemble_model.state_dict(), ensemble_path)
     else:
         wait += 1
         if wait >= patience:
             print(f"Early stopping at epoch {epoch}")
             break
 
-report_model_stats(ensemble_model, model_val_preds_tensor.shape, "TrainableEnsemble_CHBMIT")
+ensemble_model.load_state_dict(torch.load(ensemble_path, map_location=device))
+report_model_stats(ensemble_model, X_val_stack.shape, "TrainableEnsemble_CHBMIT")
+
 
 # ========== FINAL ENSEMBLE EVALUATION ON MERGED TEST SET ==========
 print("\nPreparing final merged test set for ensemble evaluation...")
@@ -336,14 +329,12 @@ y_test_merged = y_test_merged.to(device)
 # Now, have each trained model predict on the *merged* test set
 ensemble_test_preds = []
 for model in all_trained_models:
-    # Use the predict_dl function, which handles batching and device transfer
     preds_on_merged_test = predict_dl(model, X_test_merged)
     ensemble_test_preds.append(preds_on_merged_test)
 
-# Stack the predictions and convert to tensor
 model_preds_test_tensor = torch.tensor(np.stack(ensemble_test_preds, axis=1), dtype=torch.float32).to(device)
 
-print("\nEvaluating trainable ensemble on merged test set...")
+print(f"\nEvaluating trainable ensemble on merged test set (data shape: {model_preds_test_tensor.shape})...")
 ensemble_model.eval()
 with torch.no_grad():
     final_logits = ensemble_model(model_preds_test_tensor).cpu().numpy()

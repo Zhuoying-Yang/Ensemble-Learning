@@ -44,7 +44,7 @@ def extract_features(seg, fs=1024):
         features.extend([
             np.mean(ch_data), np.var(ch_data),  # std -> var
             np.max(ch_data), np.min(ch_data), np.median(ch_data),
-            entropy(ch_abs + 1e-8), kurtosis(ch_data),
+            kurtosis(ch_data),
             np.sum(ch_data**2), ((ch_data[:-1] * ch_data[1:]) < 0).sum()
         ])
         f, psd = welch(ch_data, fs=fs, nperseg=fs//2)
@@ -164,11 +164,11 @@ for rep, version in enumerate(version_suffixes):
     test_X = torch.tensor(X_test, dtype=torch.float32)
     test_y = torch.tensor(y_test, dtype=torch.long)
 
-    torch.save((train_X, train_y), f"{save_dir}/train_{version}_feature_change_three.pt")
-    torch.save((val_X, val_y), f"{save_dir}/val_{version}_feature_change_three.pt")
-    torch.save((test_X, test_y), f"{save_dir}/test_{version}_feature_change_three.pt")
+    torch.save((train_X, train_y), f"{save_dir}/train_{version}_feature_change1_three.pt")
+    torch.save((val_X, val_y), f"{save_dir}/val_{version}_feature_change1_three.pt")
+    torch.save((test_X, test_y), f"{save_dir}/test_{version}_feature_change1_three.pt")
 
-    print(f"[{version}] Saved train/val/test with _feature_three suffix.")
+    print(f"[{version}] Saved train/val/test with _feature_change1_three suffix.")
 
     merged_val_data.append(val_X)
     merged_val_labels.append(val_y)
@@ -178,7 +178,7 @@ for rep, version in enumerate(version_suffixes):
 
 # ========== MERGE AND SAVE ==========
 torch.save((torch.cat(merged_val_data, dim=0), torch.cat(merged_val_labels, dim=0)),
-           f"{save_dir}/merged_val_feature_change_three.pt")
+           f"{save_dir}/merged_val_feature_change1_three.pt")
 torch.save((torch.cat(merged_test_data, dim=0), torch.cat(merged_test_labels, dim=0)),
-           f"{save_dir}/merged_test_feature_change_three.pt")
-print("Merged val/test sets saved with _feature_change_three suffix.")
+           f"{save_dir}/merged_test_feature_change1_three.pt")
+print("Merged val/test sets saved with _feature_change1_three suffix.")

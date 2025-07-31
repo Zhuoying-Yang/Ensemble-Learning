@@ -184,7 +184,7 @@ test_labels_all = []
 val_labels_all = []
 val_data_all = []
 model_preds_val = []
-all_test_preds = {}
+all_trained_models = []
 
 # --- ADDED: FILE TO SAVE INDIVIDUAL MODEL METRICS ---
 individual_model_report_path = os.path.join(SAVE_DIR, "individual_model_performance.txt")
@@ -210,6 +210,7 @@ for version, model_type in zip(version_suffixes, model_types):
         print(f"Mismatch in samples for {version}")
         continue
     
+    num_channels = X.shape[1]
     num_samples = X.shape[2]
 
     X_trainval, X_test, y_trainval, y_test = train_test_split(X, y, test_size=0.08, stratify=y, random_state=42)
@@ -217,19 +218,18 @@ for version, model_type in zip(version_suffixes, model_types):
 
     smote = SMOTE(random_state=42)
     X_train_sm, y_train_sm = smote.fit_resample(X_train.reshape(len(X_train), -1), y_train)
-    X_train_sm = X_train_sm.reshape(-1, X.shape[1], X.shape[2])
+    X_train_sm = X_train_sm.reshape(-1, num_channels, num_samples)
 
     X_val_tensor = torch.tensor(X_val, dtype=torch.float32)
     y_val_tensor = torch.tensor(y_val, dtype=torch.long)
     val_data_all.append(X_val_tensor)
     val_labels_all.append(y_val_tensor)
 
-    X_test_tensor = torch.tensor(X_test, dtype=torch.float32)
-    y_test_tensor = torch.tensor(y_test, dtype=torch.long)
-    test_data_all.append(X_test_tensor)
-    test_labels_all.append(y_test_tensor)
+    # Accumulate all test data
+    test_data_all.append(torch.tensor(X_test, dtype=torch.float32))
+    test_labels_all.append(torch.tensor(y_test, dtype=torch.long))
     
-    model = CNN() if model_type == "CNN" else ResNet1D() if model_type == "ResNet" else EEGNet(samples=num_samples)
+    model = CNN(in_channels=num_channels) if model_type == "CNN" else ResNet1D(in_channels=num_channels) if model_type == "ResNet" else EEGNet(input_channels=num_channels, samples=num_samples)
     model.to(device)
     model_path = os.path.join(SAVE_DIR, f"{model_type}_{version}_mit.pt")
     
@@ -256,37 +256,29 @@ for version, model_type in zip(version_suffixes, model_types):
                 break
     
     model.load_state_dict(torch.load(model_path, map_location=device))
+    all_trained_models.append(model) # Store the trained models
+    
     val_preds = predict_dl(model, X_val_tensor)
     model_preds_val.append(val_preds)
     
-    # --- ADDED: INDIVIDUAL MODEL EVALUATION ON ITS TEST SET ---
-    test_preds_prob = predict_dl(model, X_test_tensor)
+    test_preds_prob = predict_dl(model, torch.tensor(X_test, dtype=torch.float32))
     test_preds_labels = np.argmax(test_preds_prob, axis=1)
     
     report_text = classification_report(y_test, test_preds_labels, digits=4)
     print(f"\nIndividual Test Set Performance for {model_type} on {version}:")
     print(report_text)
     
-    # Save the individual report to a file
     with open(individual_model_report_path, "a") as f:
         f.write(f"Model: {model_type}_{version}\n")
         f.write(report_text)
         f.write("-" * 40 + "\n\n")
-
-    # Store test predictions for later ensemble evaluation
-    all_test_preds[f"{model_type}_{version}"] = test_preds_prob
-
-    # --- FIX START ---
-    # The EEGNet model's forward method expects a 3D tensor and unsqueezes it.
-    # The other models expect a 3D tensor directly.
-    # The dummy_input_shape should reflect what the forward method expects.
+    
     if model_type == "EEGNet":
-        dummy_input_shape = (1, X.shape[1], X.shape[2])
+        dummy_input_shape = (1, num_channels, num_samples)
     else:
-        dummy_input_shape = (1, X.shape[1], X.shape[2])
+        dummy_input_shape = (1, num_channels, num_samples)
 
     report_model_stats(model, dummy_input_shape, f"{model_type}_{version}")
-    # --- FIX END ---
     
     free_memory()
 
@@ -335,31 +327,21 @@ for epoch in range(300):
 report_model_stats(ensemble_model, model_val_preds_tensor.shape, "TrainableEnsemble_CHBMIT")
 
 # ========== FINAL ENSEMBLE EVALUATION ON MERGED TEST SET ==========
-print("\nPredicting with all models on merged test set...")
-# The test data is already loaded in test_data_all and test_labels_all
-# The individual test set predictions were already made in the loop above and stored in all_test_preds
+print("\nPreparing final merged test set for ensemble evaluation...")
+X_test_merged = torch.cat(test_data_all, dim=0)
+y_test_merged = torch.cat(test_labels_all, dim=0)
+X_test_merged = X_test_merged.to(device)
+y_test_merged = y_test_merged.to(device)
 
-# Align the predictions from individual models to a common size
-model_preds_test = []
-test_labels_list = []
-for i, model_name in enumerate(all_test_preds.keys()):
-    model_preds_test.append(all_test_preds[model_name])
-    test_labels_list.append(test_labels_all[i].cpu().numpy())
+# Now, have each trained model predict on the *merged* test set
+ensemble_test_preds = []
+for model in all_trained_models:
+    # Use the predict_dl function, which handles batching and device transfer
+    preds_on_merged_test = predict_dl(model, X_test_merged)
+    ensemble_test_preds.append(preds_on_merged_test)
 
-# The test sets for each model are different sizes, which complicates a direct
-# "merged" evaluation. A more robust approach is to evaluate the ensemble on
-# each individual test set, or to use the test set from the largest-data model
-# as a proxy for the 'merged' evaluation. The original code assumed a single
-# merged test set, which isn't quite right.
-# Here we'll stick to the original code's approach of merging, but with a warning.
-print("NOTE: Merging test sets with different data versions. This is not ideal but follows the original logic.")
-print("A more rigorous approach would evaluate the ensemble on each test set individually.")
-
-y_test_combined = torch.cat(test_labels_all, dim=0).long()
-
-min_len_test = min(len(p) for p in model_preds_test)
-model_preds_test_tensor = torch.tensor(np.stack([p[:min_len_test] for p in model_preds_test], axis=1), dtype=torch.float32).to(device)
-y_test_combined_truncated = y_test_combined[:min_len_test].to(device)
+# Stack the predictions and convert to tensor
+model_preds_test_tensor = torch.tensor(np.stack(ensemble_test_preds, axis=1), dtype=torch.float32).to(device)
 
 print("\nEvaluating trainable ensemble on merged test set...")
 ensemble_model.eval()
@@ -368,8 +350,8 @@ with torch.no_grad():
 
 final_pred = np.argmax(final_logits, axis=1)
 
-conf_matrix = confusion_matrix(y_test_combined_truncated.cpu().numpy(), final_pred)
-report_text = classification_report(y_test_combined_truncated.cpu().numpy(), final_pred, digits=4)
+conf_matrix = confusion_matrix(y_test_merged.cpu().numpy(), final_pred)
+report_text = classification_report(y_test_merged.cpu().numpy(), final_pred, digits=4)
 final_weights = torch.softmax(ensemble_model.raw_weights, dim=0).detach().cpu().numpy()
 
 model_names = [f"{name}_{version}" for name, version in zip(model_types, version_suffixes)]
@@ -388,7 +370,7 @@ with open(os.path.join(SAVE_DIR, "hybrid_classification_report_chbmit_updated.tx
 
 plt.figure(figsize=(6, 4))
 sns.heatmap(conf_matrix, annot=True, fmt='d', cmap="Blues")
-plt.title("Confusion Matrix - Trainable Ensemble (CHB-MIT Test Set)")
+plt.title("Confusion Matrix - Trainable Ensemble (CHB-MIT Merged Test Set)")
 plt.xlabel("Predicted")
 plt.ylabel("True")
 plt.tight_layout()

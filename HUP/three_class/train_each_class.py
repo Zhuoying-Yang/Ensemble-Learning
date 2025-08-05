@@ -89,52 +89,6 @@ class CNN(nn.Module):
     def forward(self, x):
         return self.model(x)
 
-class InceptionBlock1D(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_sizes=[9, 19, 39], bottleneck_channels=32):
-        super().__init__()
-        self.bottleneck = nn.Conv1d(in_channels, bottleneck_channels, kernel_size=1, bias=False)
-        self.conv_list = nn.ModuleList([
-            nn.Conv1d(bottleneck_channels, out_channels, kernel_size=k, padding=k//2, bias=False)
-            for k in kernel_sizes
-        ])
-        self.maxpool = nn.Sequential(
-            nn.MaxPool1d(kernel_size=3, stride=1, padding=1),
-            nn.Conv1d(in_channels, out_channels, kernel_size=1, bias=False)
-        )
-        self.bn = nn.BatchNorm1d(out_channels * (len(kernel_sizes)+1))
-        self.relu = nn.ReLU()
-
-    def forward(self, x):
-        x_bottleneck = self.bottleneck(x)
-        conv_outputs = [conv(x_bottleneck) for conv in self.conv_list]
-        pool_output = self.maxpool(x)
-        out = torch.cat(conv_outputs + [pool_output], dim=1)
-        return self.relu(self.bn(out))
-
-
-class InceptionTime(nn.Module):
-    def __init__(self, in_channels=2, num_blocks=3, out_channels=32, bottleneck_channels=32, num_classes=3):
-        super().__init__()
-        blocks = []
-        for _ in range(num_blocks):
-            blocks.append(InceptionBlock1D(in_channels if not blocks else out_channels * 4,
-                                           out_channels,
-                                           bottleneck_channels=bottleneck_channels))
-        self.inception_blocks = nn.Sequential(*blocks)
-        self.gap = nn.AdaptiveAvgPool1d(1)
-        self.fc = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(out_channels * 4, 64),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(64, num_classes)
-        )
-
-    def forward(self, x):  # x: (B, C, T)
-        x = self.inception_blocks(x)
-        x = self.gap(x)
-        return self.fc(x)
-
 class EEGNet(nn.Module):
     def __init__(self, num_classes=3, input_channels=2, samples=2048):
         super(EEGNet, self).__init__()
@@ -219,8 +173,8 @@ class TrainableEnsemble(nn.Module):
         return torch.einsum('mc,nmc->nc', weights, model_outputs)
 
 # ========== TRAIN INDIVIDUAL MODELS ==========
-model_types = ["CNN", "EEGNet", "ResNet", "InceptionTime"]
-version_suffixes = ["v1", "v2", "v3", "v4"] 
+model_types = ["CNN", "EEGNet", "ResNet"]
+version_suffixes = ["v1", "v2", "v3"] 
 
 
 val_data_all, val_labels_all = [], []
@@ -243,8 +197,7 @@ for version, model_type in zip(version_suffixes, model_types):
     model = (
     CNN() if model_type == "CNN" else
     EEGNet() if model_type == "EEGNet" else
-    ResNet1D() if model_type == "ResNet" else
-    InceptionTime()
+    ResNet1D()
 )
     model.to(device)
     model_path = os.path.join(SAVE_DIR, f"{model_name}.pt")
@@ -295,8 +248,7 @@ for model_type, version in zip(model_types, version_suffixes):
     cls = (
         CNN if model_type == "CNN" else
         EEGNet if model_type == "EEGNet" else
-        ResNet1D if model_type == "ResNet" else
-        InceptionTime
+        ResNet1D
     )
     model = cls().to(device)
     model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
@@ -314,8 +266,7 @@ for model_type, version in zip(model_types, version_suffixes):
     cls = (
         CNN if model_type == "CNN" else
         EEGNet if model_type == "EEGNet" else
-        ResNet1D if model_type == "ResNet" else
-        InceptionTime
+        ResNet1D
     )
     model = cls().to(device)
     model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
@@ -363,8 +314,7 @@ print("\nIndividual Model Test Performance")
 trained_models = [
     ("CNN", "v1"),
     ("EEGNet", "v2"),
-    ("ResNet", "v3"),
-    ("InceptionTime", "v4")
+    ("ResNet", "v3")
 ]
 
 for model_type, version in trained_models:
@@ -373,8 +323,7 @@ for model_type, version in trained_models:
         cls = (
     CNN if model_type == "CNN" else
     EEGNet if model_type == "EEGNet" else
-    ResNet1D if model_type == "ResNet" else
-    InceptionTime
+    ResNet1D
 )
         model = cls().to(device)
         model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))

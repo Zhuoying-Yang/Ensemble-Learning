@@ -15,7 +15,7 @@ import pandas as pd
 
 # ========== DEVICE AND PATHS ==========
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-PREPROCESSED_DIR = os.path.expanduser("~/HUP_two_class_standardized")
+PREPROCESSED_DIR = os.path.expanduser("~/HUP_two_class_standardized_link")
 SAVE_DIR = os.path.expanduser("~/models_link")
 os.makedirs(SAVE_DIR, exist_ok=True)
 

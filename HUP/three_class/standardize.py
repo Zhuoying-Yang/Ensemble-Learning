@@ -31,15 +31,18 @@ def standardize_folder(folder_path):
         path = os.path.join(folder_path, fname)
         original = torch.load(path)
 
-        # Extract X
-        if isinstance(original, list):
-            X = [d[0] if isinstance(d, (tuple, list)) else d for d in original]
-            X = torch.stack(X)
-            y = [d[1] if isinstance(d, (tuple, list)) and len(d) > 1 else None for d in original]
-            y = torch.stack(y) if y[0] is not None else None
-        elif isinstance(original, (tuple, list)) and len(original) == 2:
+        # Extract X and y
+        if isinstance(original, (tuple, list)) and len(original) == 2 and isinstance(original[0], torch.Tensor):
+            # Case: (X, y) tuple
             X, y = original
+        elif isinstance(original, list) and isinstance(original[0], (tuple, list)):
+            # Case: list of (X, y) pairs
+            X = [d[0] for d in original]
+            y = [d[1] for d in original]
+            X = torch.stack(X)
+            y = torch.stack(y)
         else:
+            # Only X
             X = original
             y = None
 

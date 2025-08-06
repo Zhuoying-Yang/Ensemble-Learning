@@ -163,14 +163,23 @@ class ResNet1D(nn.Module):
         return self.fc(x)
 
 
+# class TrainableEnsemble(nn.Module):
+#     def __init__(self, num_models):
+#         super().__init__()
+#         self.raw_weights = nn.Parameter(torch.ones(num_models, 3))  # Per-class weights
+
+#     def forward(self, model_outputs):  # (N, M, 3)
+#         weights = torch.softmax(self.raw_weights, dim=0)  # Normalize across models for each class
+#         return torch.einsum('mc,nmc->nc', weights, model_outputs)
+
 class TrainableEnsemble(nn.Module):
     def __init__(self, num_models):
         super().__init__()
-        self.raw_weights = nn.Parameter(torch.ones(num_models, 3))  # Per-class weights
-
+        self.raw_weights = nn.Parameter(torch.ones(num_models))
     def forward(self, model_outputs):  # (N, M, 3)
-        weights = torch.softmax(self.raw_weights, dim=0)  # Normalize across models for each class
-        return torch.einsum('mc,nmc->nc', weights, model_outputs)
+        weights = torch.softmax(self.raw_weights, dim=0)  # (M,)
+        weighted = torch.einsum('m,nmc->nc', weights, model_outputs)
+        return weighted
 
 # ========== TRAIN INDIVIDUAL MODELS ==========
 model_types = ["CNN", "EEGNet", "ResNet"]

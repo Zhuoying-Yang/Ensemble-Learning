@@ -59,5 +59,5 @@ def standardize_folder(folder_path):
         print(f"Saved: {os.path.basename(save_path)}")
 
 # Run for both folders
-standardize_folder("/project/def-xilinliu/data/HUP_two_class")
-standardize_folder("/project/def-xilinliu/data/HUP_three_class")
+standardize_folder("/project/def-xilinliu/data/HUP_two_class_standardized")
+standardize_folder("/project/def-xilinliu/data/HUP_three_class_standardized")

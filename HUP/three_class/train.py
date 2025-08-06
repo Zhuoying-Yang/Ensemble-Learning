@@ -11,10 +11,11 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import gc
 from thop import profile, clever_format
+import pandas as pd
 
 # ========== DEVICE AND PATHS ==========
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-PREPROCESSED_DIR = os.path.expanduser("~/data_link")
+PREPROCESSED_DIR = os.path.expanduser("~/HUP_three_class_standardized_link")
 SAVE_DIR = os.path.expanduser("~/models_link")
 os.makedirs(SAVE_DIR, exist_ok=True)
 
@@ -87,7 +88,6 @@ class CNN(nn.Module):
         )
     def forward(self, x):
         return self.model(x)
-
 
 class EEGNet(nn.Module):
     def __init__(self, num_classes=3, input_channels=2, samples=2048):
@@ -166,24 +166,25 @@ class ResNet1D(nn.Module):
 class TrainableEnsemble(nn.Module):
     def __init__(self, num_models):
         super().__init__()
-        self.raw_weights = nn.Parameter(torch.ones(num_models))
+        self.raw_weights = nn.Parameter(torch.ones(num_models, 3))  # Per-class weights
+
     def forward(self, model_outputs):  # (N, M, 3)
-        weights = torch.softmax(self.raw_weights, dim=0)  # (M,)
-        weighted = torch.einsum('m,nmc->nc', weights, model_outputs)
-        return weighted
+        weights = torch.softmax(self.raw_weights, dim=0)  # Normalize across models for each class
+        return torch.einsum('mc,nmc->nc', weights, model_outputs)
 
 # ========== TRAIN INDIVIDUAL MODELS ==========
-version_suffixes = ["v1", "v2", "v3", "v4"]
-model_types = ["CNN", "EEGNet", "ResNet", "RF"]
+model_types = ["CNN", "EEGNet", "ResNet"]
+version_suffixes = ["v1", "v2", "v3"] 
+
 
 val_data_all, val_labels_all = [], []
 test_data_all, test_labels_all = [], []
 
 for version, model_type in zip(version_suffixes, model_types):
     print(f"\nLoading preprocessed data for {model_type} on {version}...")
-    train_X, train_y = torch.load(f"{PREPROCESSED_DIR}/train_{version}_raw_three.pt")
-    val_X, val_y = torch.load(f"{PREPROCESSED_DIR}/val_{version}_raw_three.pt")
-    test_X, test_y = torch.load(f"{PREPROCESSED_DIR}/test_{version}_raw_three.pt")
+    train_X, train_y = torch.load(f"{PREPROCESSED_DIR}/train_{version}_raw_three_standard.pt")
+    val_X, val_y = torch.load(f"{PREPROCESSED_DIR}/val_{version}_raw_three_standard.pt")
+    test_X, test_y = torch.load(f"{PREPROCESSED_DIR}/test_{version}_raw_three_standard.pt")
 
 
     val_data_all.append(val_X)
@@ -191,58 +192,49 @@ for version, model_type in zip(version_suffixes, model_types):
     test_data_all.append(test_X)
     test_labels_all.append(test_y)
 
-    model_name = f"{model_type}_{version}_raw_three_complex"
+    model_name = f"{model_type}_{version}_raw_three_complex_standard"
 
-    if model_type == "RF":
-        rf_path = os.path.join(SAVE_DIR, f"{model_name}.joblib")
-    
-        if os.path.exists(rf_path):
-            print(f"Loading pre-trained RF model from {rf_path}")
-            rf = joblib.load(rf_path)
-        else:
-            print(f"Training new RF model and saving to {rf_path}")
-            rf = RandomForestClassifier(n_estimators=100, max_depth=8, n_jobs=1)
-            rf.fit(train_X.reshape(len(train_X), -1).numpy(), train_y.numpy())
-            joblib.dump(rf, rf_path)
+    model = (
+    CNN() if model_type == "CNN" else
+    EEGNet() if model_type == "EEGNet" else
+    ResNet1D()
+)
+    model.to(device)
+    model_path = os.path.join(SAVE_DIR, f"{model_name}.pt")
 
-
-    else:
-        model = CNN() if model_type == "CNN" else EEGNet() if model_type == "EEGNet" else ResNet1D()
-        model.to(device)
-        model_path = os.path.join(SAVE_DIR, f"{model_name}.pt")
-
-        retrain = not os.path.exists(model_path)
-        if retrain:
-            optimizer = optim.Adam(model.parameters(), lr=1e-3)
-            criterion = nn.CrossEntropyLoss()
-            train_loader = DataLoader(TensorDataset(train_X, train_y), batch_size=64, shuffle=True)
+    retrain = not os.path.exists(model_path)
+    if retrain:
+        optimizer = optim.Adam(model.parameters(), lr=1e-3)
+        criterion = nn.CrossEntropyLoss()
+        train_loader = DataLoader(TensorDataset(train_X, train_y), batch_size=64, shuffle=True)
         
-            best_val_loss, wait = float("inf"), 0
-            for epoch in range(500):
-                train(model, train_loader, criterion, optimizer)
-                if epoch % 10 == 0:
-                    val_loss, val_acc = evaluate(model, DataLoader(TensorDataset(val_X, val_y), batch_size=64), criterion)
-                    print(f"Epoch {epoch}: Val Loss={val_loss:.4f} | Val Acc={val_acc:.4f}")
-                if val_loss < best_val_loss:
-                    best_val_loss, wait = val_loss, 0
-                else:
-                    wait += 1
-                    if wait >= 80:
-                        break
-            torch.save(model.state_dict(), model_path)
-            report_model_stats(model, (1, 2, train_X.shape[2]), model_path)
-        else:
-            print(f"Loading pre-trained {model_type} model from {model_path}")
-            model.load_state_dict(torch.load(model_path, map_location=device))
+        best_val_loss, wait = float("inf"), 0
+        for epoch in range(500):
+            train(model, train_loader, criterion, optimizer)
+            if epoch % 10 == 0:
+                val_loss, val_acc = evaluate(model, DataLoader(TensorDataset(val_X, val_y), batch_size=64), criterion)
+                print(f"Epoch {epoch}: Val Loss={val_loss:.4f} | Val Acc={val_acc:.4f}")
+            if val_loss < best_val_loss:
+                best_val_loss, wait = val_loss, 0
+            else:
+                wait += 1
+                if wait >= 80:
+                    break
+        torch.save(model.state_dict(), model_path)
+        report_model_stats(model, (1, 2, train_X.shape[2]), model_path)
+        
+    else:
+        print(f"Loading pre-trained {model_type} model from {model_path}")
+        model.load_state_dict(torch.load(model_path, map_location=device))
 
     free_memory()
 
 # ========== ENSEMBLE USING MERGED VALIDATION SET ==========
 merged_train_data = []
 merged_train_labels = []
-merged_val_data, merged_val_labels = torch.load(f"{PREPROCESSED_DIR}/merged_val_raw_three.pt")
+merged_val_data, merged_val_labels = torch.load(f"{PREPROCESSED_DIR}/merged_val_raw_three_standard.pt")
 for version in version_suffixes:
-    train_X, train_y = torch.load(f"{PREPROCESSED_DIR}/train_{version}_raw_three.pt")
+    train_X, train_y = torch.load(f"{PREPROCESSED_DIR}/train_{version}_raw_three_standard.pt")
     merged_train_data.append(train_X)
     merged_train_labels.append(train_y)
 
@@ -251,7 +243,7 @@ y_train_all = torch.cat(merged_train_labels, dim=0)
 
 # train_preds = []
 # for model_type, version in zip(model_types, version_suffixes):
-#     model_name = f"{model_type}_{version}_raw_three_complex"
+#     model_name = f"{model_type}_{version}_raw_three_complex_standard"
 #     if model_type == "RF":
 #         rf = joblib.load(f"{model_name}.joblib")
 #         prob = rf.predict_proba(X_train_all.cpu().numpy().reshape(len(X_train_all), -1))
@@ -264,7 +256,7 @@ y_train_all = torch.cat(merged_train_labels, dim=0)
 
 train_preds = []
 for model_type, version in zip(model_types, version_suffixes):
-    model_name = f"{model_type}_{version}_raw_three_complex"
+    model_name = f"{model_type}_{version}_raw_three_complex_standard"
 
     # Skip RF during ensemble weight training
     if model_type == "RF":
@@ -283,7 +275,7 @@ y_train_true = y_train_all.long().to(device)
 # merged_preds = []
 
 # for model_type, version in zip(model_types, version_suffixes):
-#     model_name = f"{model_type}_{version}_raw_three_complex"
+#     model_name = f"{model_type}_{version}_raw_three_complex_standard"
 #     if model_type == "RF":
 #         rf = joblib.load(f"{model_name}.joblib")
 #         prob = rf.predict_proba(merged_val_data.cpu().numpy().reshape(len(merged_val_data), -1))
@@ -296,7 +288,7 @@ y_train_true = y_train_all.long().to(device)
 
 merged_preds = []
 for model_type, version in zip(model_types, version_suffixes):
-    model_name = f"{model_type}_{version}_raw_three_complex"
+    model_name = f"{model_type}_{version}_raw_three_complex_standard"
 
     # Skip RF during ensemble weight training
     if model_type == "RF":
@@ -340,7 +332,7 @@ conf_matrix = confusion_matrix(y_true, val_pred)
 report = classification_report(y_true, val_pred, digits=4)
 
 # ========== PREDICT ON TEST SET ==========
-X_test, y_test = torch.load(f"{PREPROCESSED_DIR}/merged_test_raw_three.pt")
+X_test, y_test = torch.load(f"{PREPROCESSED_DIR}/merged_test_raw_three_standard.pt")
 X_test, y_test = X_test.to(device), y_test.to(device)
 y_test_np = y_test.cpu().numpy()
 
@@ -355,7 +347,7 @@ trained_models = [
 ]
 
 for model_type, version in trained_models:
-    model_name = f"{model_type}_{version}_raw_three_complex"
+    model_name = f"{model_type}_{version}_raw_three_complex_standard"
     try:
         if model_type == "RF":
             rf = joblib.load(f"{model_name}.joblib")

@@ -13,7 +13,7 @@ def standardize_folder(folder_path):
         path = os.path.join(folder_path, fname)
         data = torch.load(path)
 
-        # Handle tuple or list of tuples
+        # Extract X from (X, y) or list of (X, y)
         if isinstance(data, list):
             data = [d[0] if isinstance(d, (tuple, list)) else d for d in data]
             data = torch.stack(data)
@@ -26,20 +26,33 @@ def standardize_folder(folder_path):
 
     print(f"Mean: {mean:.4f}, Std: {std:.4f}")
 
-    # Step 2: Standardize all files
+    # Step 2: Standardize all files and preserve labels if present
     for fname in all_files:
         path = os.path.join(folder_path, fname)
-        data = torch.load(path)
+        original = torch.load(path)
 
-        if isinstance(data, list):
-            data = [d[0] if isinstance(d, (tuple, list)) else d for d in data]
-            data = torch.stack(data)
-        elif isinstance(data, (tuple, list)):
-            data = data[0]
+        # Extract X
+        if isinstance(original, list):
+            X = [d[0] if isinstance(d, (tuple, list)) else d for d in original]
+            X = torch.stack(X)
+            y = [d[1] if isinstance(d, (tuple, list)) and len(d) > 1 else None for d in original]
+            y = torch.stack(y) if y[0] is not None else None
+        elif isinstance(original, (tuple, list)) and len(original) == 2:
+            X, y = original
+        else:
+            X = original
+            y = None
 
-        standardized = (data - mean) / std
+        # Standardize
+        X_standard = (X - mean) / std
+
+        # Save as (X_standard, y) if y exists
         save_path = os.path.join(folder_path, fname.replace(".pt", "_standard.pt"))
-        torch.save(standardized, save_path)
+        if y is not None:
+            torch.save((X_standard, y), save_path)
+        else:
+            torch.save(X_standard, save_path)
+
         print(f"Saved: {os.path.basename(save_path)}")
 
 # Run for both folders

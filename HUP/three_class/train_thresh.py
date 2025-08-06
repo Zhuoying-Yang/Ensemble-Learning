@@ -15,7 +15,7 @@ import pandas as pd
 
 # ========== DEVICE AND PATHS ==========
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-PREPROCESSED_DIR = os.path.expanduser("~/data_link")
+PREPROCESSED_DIR = os.path.expanduser("~/HUP_three_class_standardized_link")
 SAVE_DIR = os.path.expanduser("~/models_link")
 os.makedirs(SAVE_DIR, exist_ok=True)
 
@@ -182,9 +182,9 @@ test_data_all, test_labels_all = [], []
 
 for version, model_type in zip(version_suffixes, model_types):
     print(f"\nLoading preprocessed data for {model_type} on {version}...")
-    train_X, train_y = torch.load(f"{PREPROCESSED_DIR}/train_{version}_raw_three.pt")
-    val_X, val_y = torch.load(f"{PREPROCESSED_DIR}/val_{version}_raw_three.pt")
-    test_X, test_y = torch.load(f"{PREPROCESSED_DIR}/test_{version}_raw_three.pt")
+    train_X, train_y = torch.load(f"{PREPROCESSED_DIR}/train_{version}_raw_three_standard.pt")
+    val_X, val_y = torch.load(f"{PREPROCESSED_DIR}/val_{version}_raw_three_standard.pt")
+    test_X, test_y = torch.load(f"{PREPROCESSED_DIR}/test_{version}_raw_three_standard.pt")
 
 
     val_data_all.append(val_X)
@@ -192,7 +192,7 @@ for version, model_type in zip(version_suffixes, model_types):
     test_data_all.append(test_X)
     test_labels_all.append(test_y)
 
-    model_name = f"{model_type}_{version}_raw_three_complex"
+    model_name = f"{model_type}_{version}_raw_three_complex_standard"
 
     model = (
     CNN() if model_type == "CNN" else
@@ -232,9 +232,9 @@ for version, model_type in zip(version_suffixes, model_types):
 # ========== ENSEMBLE USING MERGED VALIDATION SET ==========
 merged_train_data = []
 merged_train_labels = []
-merged_val_data, merged_val_labels = torch.load(f"{PREPROCESSED_DIR}/merged_val_raw_three.pt")
+merged_val_data, merged_val_labels = torch.load(f"{PREPROCESSED_DIR}/merged_val_raw_three_standard.pt")
 for version in version_suffixes:
-    train_X, train_y = torch.load(f"{PREPROCESSED_DIR}/train_{version}_raw_three.pt")
+    train_X, train_y = torch.load(f"{PREPROCESSED_DIR}/train_{version}_raw_three_standard.pt")
     merged_train_data.append(train_X)
     merged_train_labels.append(train_y)
 
@@ -243,7 +243,7 @@ y_train_all = torch.cat(merged_train_labels, dim=0)
 
 train_preds = []
 for model_type, version in zip(model_types, version_suffixes):
-    model_name = f"{model_type}_{version}_raw_three_complex"
+    model_name = f"{model_type}_{version}_raw_three_complex_standard"
 
     cls = (
         CNN if model_type == "CNN" else
@@ -261,7 +261,7 @@ y_train_true = y_train_all.long().to(device)
 
 merged_preds = []
 for model_type, version in zip(model_types, version_suffixes):
-    model_name = f"{model_type}_{version}_raw_three_complex"
+    model_name = f"{model_type}_{version}_raw_three_complex_standard"
 
     cls = (
         CNN if model_type == "CNN" else
@@ -337,7 +337,7 @@ print(best_report)
 thresholds = best_thresh
 
 # ========== PREDICT ON TEST SET ==========
-X_test, y_test = torch.load(f"{PREPROCESSED_DIR}/merged_test_raw_three.pt")
+X_test, y_test = torch.load(f"{PREPROCESSED_DIR}/merged_test_raw_three_standard.pt")
 X_test, y_test = X_test.to(device), y_test.to(device)
 y_test_np = y_test.cpu().numpy()
 
@@ -351,7 +351,7 @@ trained_models = [
 ]
 
 for model_type, version in trained_models:
-    model_name = f"{model_type}_{version}_raw_three_complex"
+    model_name = f"{model_type}_{version}_raw_three_complex_standard"
     try:
         cls = (
     CNN if model_type == "CNN" else

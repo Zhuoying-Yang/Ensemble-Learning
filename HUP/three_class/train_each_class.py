@@ -238,26 +238,22 @@ for version in version_suffixes:
     merged_train_data.append(train_X)
     merged_train_labels.append(train_y)
 
-X_train_all = torch.cat(merged_train_data, dim=0)
-y_train_all = torch.cat(merged_train_labels, dim=0)
+# === Load train_v4 and use it to train ensemble weights ===
+print("\nUsing train_v4 to train ensemble weights...")
+train_v4_X, train_v4_y = torch.load(f"{PREPROCESSED_DIR}/train_v4_raw_three_standard.pt")
 
-train_preds = []
+ensemble_train_preds = []
 for model_type, version in zip(model_types, version_suffixes):
     model_name = f"{model_type}_{version}_raw_three_complex_standard"
-
-    cls = (
-        CNN if model_type == "CNN" else
-        EEGNet if model_type == "EEGNet" else
-        ResNet1D
-    )
+    cls = CNN if model_type == "CNN" else EEGNet if model_type == "EEGNet" else ResNet1D
     model = cls().to(device)
     model.load_state_dict(torch.load(os.path.join(SAVE_DIR, f"{model_name}.pt"), map_location=device))
-    prob = predict_dl(model, X_train_all)
-    train_preds.append(prob)
+    prob = predict_dl(model, train_v4_X)
+    ensemble_train_preds.append(prob)
 
+X_train_stack = torch.tensor(np.stack(ensemble_train_preds, axis=1), dtype=torch.float32).to(device)  # (N, M, 3)
+y_train_true = train_v4_y.long().to(device)
 
-X_train_stack = torch.tensor(np.stack(train_preds, axis=1), dtype=torch.float32).to(device)  # (N, M, 3)
-y_train_true = y_train_all.long().to(device)
 
 merged_preds = []
 for model_type, version in zip(model_types, version_suffixes):
@@ -277,7 +273,7 @@ X_val_stack = torch.tensor(np.stack(merged_preds, axis=1), dtype=torch.float32).
 y_val_true = merged_val_labels.long().to(device)
 
 
-ensemble = TrainableEnsemble(num_models=len(train_preds)).to(device)
+ensemble = TrainableEnsemble(num_models=len(ensemble_train_preds)).to(device)
 optimizer = torch.optim.Adam(ensemble.parameters(), lr=0.01)
 criterion = torch.nn.CrossEntropyLoss()
 

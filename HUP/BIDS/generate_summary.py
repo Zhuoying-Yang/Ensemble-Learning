@@ -1,4 +1,5 @@
 import os
+import numpy as np
 from scipy.io import loadmat
 
 # -----------------------------
@@ -8,7 +9,7 @@ from scipy.io import loadmat
 bids_root = "/home/zhuoying/projects/def-xilinliu/data/UPenn_data_bids"
 mat_root = "/home/zhuoying/projects/def-xilinliu/data/UPenn_data"
 
-sampling_rate = 1024  # Hz
+sampling_rate = 1024  # Hz (must match fs in your processing script)
 chunk_duration_sec = 3600  # 1 hour per chunk
 
 subjects = [
@@ -27,7 +28,7 @@ subjects = [
 # -----------------------------
 
 for subject in subjects:
-    subj_label = subject.replace('HUP', '').replace('_phaseII', '').replace('b', 'b')
+    subj_label = subject.replace('HUP', '').replace('_phaseII', '')
     eeg_dir = os.path.join(bids_root, f"sub-{subj_label}", "ses-phaseII", "eeg")
     mat_file = os.path.join(mat_root, subject, f"{subject}.mat")
 
@@ -39,18 +40,27 @@ for subject in subjects:
     summary_lines.append(f"Data Sampling Rate: {sampling_rate} Hz")
     summary_lines.append("*" * 25 + "\n")
 
-    # Load seizure onsets (if any)
+    # -----------------------------
+    # Load seizure onsets (in seconds) and convert to samples (MATCHES SECOND SCRIPT)
+    # -----------------------------
     seizure_starts = []
     if os.path.exists(mat_file):
         try:
             mat = loadmat(mat_file)
-            tszr = mat.get('tszr', [])
-            if len(tszr) > 0:
-                seizure_starts = [int(round(entry[0][0][0])) for entry in tszr]
+            tszr = mat.get('tszr', None)
+
+            if tszr is not None:
+                # Robustly flatten to 1D array of floats (seconds)
+                tszr_flat = np.array(tszr, dtype=float).reshape(-1)
+                # Convert seconds -> samples
+                seizure_starts = [int(round(t_sec * sampling_rate)) for t_sec in tszr_flat]
+                seizure_starts.sort()
         except Exception as e:
             print(f"Error loading {subject}: {e}")
 
+    # -----------------------------
     # Get sorted list of EDF files with their numeric run indices
+    # -----------------------------
     edf_files = []
     for f in os.listdir(eeg_dir):
         if f.endswith("_eeg.edf"):
@@ -62,7 +72,9 @@ for subject in subjects:
 
     edf_files_sorted = sorted(edf_files, key=lambda x: x[0])
 
+    # -----------------------------
     # For each EDF file, check for seizures and write summary
+    # -----------------------------
     for chunk_idx, (run_idx, edf_file) in enumerate(edf_files_sorted):
         file_start_sample = chunk_idx * chunk_duration_sec * sampling_rate
         file_end_sample = (chunk_idx + 1) * chunk_duration_sec * sampling_rate

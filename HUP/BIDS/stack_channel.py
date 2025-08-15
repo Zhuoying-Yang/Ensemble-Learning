@@ -1,4 +1,5 @@
 import os
+import re
 import numpy as np
 import h5py
 import mne
@@ -24,8 +25,11 @@ subjects = [
 ]
 
 fs = 1024  # Hz
-chunk_size = 1  # Channels to load at once
-export_chunk_sec = 1800*2  # 30 minutes = 1800 seconds
+chunk_size = 1            # channels to load at once
+export_chunk_sec = 1800*2 # 60 minutes per run (30 min * 2)
+
+# Ear-EEG channel name pattern (case-insensitive): LEAR#, REAR#, etc.
+EAR_PATTERN = re.compile(r'^(L|R)EAR\d+$', flags=re.IGNORECASE)
 
 # -----------------------------
 # Helper Functions
@@ -44,7 +48,13 @@ def clean_signal(data):
         else:
             print("Channel has NaN/Inf — interpolating")
             idx = np.isfinite(data)
-            data[~idx] = np.interp(np.flatnonzero(~idx), np.flatnonzero(idx), data[idx])
+            # indices where data is finite
+            good = np.flatnonzero(idx)
+            bad = np.flatnonzero(~idx)
+            # handle edge cases: if leading/trailing NaNs exist, extend ends
+            if good.size == 0:
+                return np.zeros_like(data)
+            data[~idx] = np.interp(bad, good, data[idx])
     return data
 
 def scale_and_clip_signal(data, scale_factor=1e-5, clip_value=500):
@@ -55,45 +65,61 @@ def scale_and_clip_signal(data, scale_factor=1e-5, clip_value=500):
     print(f"Final data min={np.min(data)}, max={np.max(data)} after clipping")
     return data
 
+def is_ear_channel(name: str) -> bool:
+    """Return True if channel name is LEAR* or REAR* (case-insensitive)."""
+    return bool(EAR_PATTERN.match(name.upper()))
+
 def process_subject(subject_folder):
     subject_path = os.path.join(base_input, subject_folder)
-    subject_label = subject_folder.replace('HUP', '').replace('_phaseII', '').replace('b', 'b')
+    subject_label = subject_folder.replace('HUP', '').replace('_phaseII', '')
     output_path = os.path.join(base_output, f"sub-{subject_label}", "ses-phaseII", "eeg")
     os.makedirs(output_path, exist_ok=True)
 
     print(f"\nProcessing subject: {subject_folder} → sub-{subject_label}")
 
-    channel_files = []
+    # --- collect only ear-EEG channels into a dict ---
+    ear_channels = {}  # dict: {channel_name: np.array}
     lengths = []
 
     for filename in sorted(os.listdir(subject_path)):
-        if filename.endswith('.mat') and any(tag in filename for tag in ['LA', 'LC', 'LEAR', 'REAR']):
-            ch_path = os.path.join(subject_path, filename)
-            try:
-                data = load_channel(ch_path)
-                data = clean_signal(data)
-                data = scale_and_clip_signal(data)
-                channel_files.append((filename.replace('.mat', ''), data))
-                lengths.append(len(data))
-                print(f"  Loaded {filename}, length: {len(data)}")
-            except Exception as e:
-                print(f"Failed loading {filename}: {e}")
+        if not filename.endswith('.mat'):
+            continue
+        # skip the metadata .mat file
+        if filename.startswith(subject_folder.replace('_phaseII', '')) or filename.startswith("HUP") and filename.endswith("_phaseII.mat"):
+            continue
 
-    if len(channel_files) == 0:
-        print("No valid channels found, skipping.")
+        ch_name = filename[:-4]  # strip '.mat'
+        if not is_ear_channel(ch_name):
+            # Only keep LEAR*/REAR* channels
+            continue
+
+        ch_path = os.path.join(subject_path, filename)
+        try:
+            data = load_channel(ch_path)
+            data = clean_signal(data)
+            data = scale_and_clip_signal(data)
+            ear_channels[ch_name] = data
+            lengths.append(len(data))
+            print(f"  Loaded EAR ch {filename}, length: {len(data)}")
+        except Exception as e:
+            print(f"Failed loading {filename}: {e}")
+
+    if len(ear_channels) == 0:
+        print("No EAR (LEAR/REAR) channels found, skipping.")
         return
 
+    # --- align to common length ---
     min_len = min(lengths)
-    print(f"  Aligning all channels to {min_len} samples.")
+    print(f"  Aligning all EAR channels to {min_len} samples.")
+
     raw = None
-    for i in range(0, len(channel_files), chunk_size):
-        chunk = channel_files[i:i + chunk_size]
-        data_list = []
-        names_list = []
-        for name, data in chunk:
-            data_list.append(data[:min_len])
-            names_list.append(name)
+    ch_items = list(ear_channels.items())
+    for i in range(0, len(ch_items), chunk_size):
+        chunk = ch_items[i:i + chunk_size]
+        names_list = [name for name, _ in chunk]
+        data_list = [data[:min_len] for _, data in chunk]
         stacked_data = np.stack(data_list, axis=0)
+
         info = mne.create_info(ch_names=names_list, sfreq=fs, ch_types='eeg')
         raw_chunk = mne.io.RawArray(stacked_data, info)
         raw_chunk._data = raw_chunk._data.astype(np.float32)
@@ -106,6 +132,7 @@ def process_subject(subject_folder):
         del data_list, names_list, stacked_data, raw_chunk
         gc.collect()
 
+    # --- export in fixed-length runs ---
     scans = []
     total_samples = raw.n_times
     samples_per_chunk = export_chunk_sec * fs
@@ -124,23 +151,39 @@ def process_subject(subject_folder):
         del raw_sub_chunk
         gc.collect()
 
+    # --- BIDS-like sidecars ---
     scans_df = pd.DataFrame(scans)
     scans_df.to_csv(os.path.join(output_path, f"sub-{subject_label}_ses-phaseII_scans.tsv"), sep='\t', index=False)
 
     channels_df = pd.DataFrame({
         "name": raw.ch_names,
         "type": ["EEG"] * len(raw.ch_names),
-        "unit": ["µV"] * len(raw.ch_names),
+        "unit": ["uV"] * len(raw.ch_names),
         "sampling_frequency": [fs] * len(raw.ch_names),
         "status": ["good"] * len(raw.ch_names)
     })
-    channels_df.to_csv(os.path.join(output_path, f"sub-{subject_label}_ses-phaseII_task-phaseII_channels.tsv"), sep='\t>
+    channels_df.to_csv(
+        os.path.join(output_path, f"sub-{subject_label}_ses-phaseII_task-phaseII_channels.tsv"),
+        sep='\t', index=False
+    )
+
+    # electrodes TSV (iEEG coordinates) if present — optional; safe no-op for ear EEG
     electrodes_csv = [f for f in os.listdir(subject_path) if f.endswith('_electrodes.csv')]
     if electrodes_csv:
         try:
             electrodes_df = pd.read_csv(os.path.join(subject_path, electrodes_csv[0]))
-            electrodes_df.columns = ['name', 'x', 'y', 'z']
-            electrodes_df.to_csv(os.path.join(output_path, f"sub-{subject_label}_electrodes.tsv"), sep='\t', index=Fals>            print("✅ Converted electrodes.csv to electrodes.tsv")
+            # Ensure expected columns exist
+            cols = [c.lower() for c in electrodes_df.columns]
+            # try to map to ['name','x','y','z'] if present
+            rename_map = {}
+            for src, dst in zip(electrodes_df.columns, ['name', 'x', 'y', 'z'][:len(electrodes_df.columns)]):
+                rename_map[src] = dst
+            electrodes_df = electrodes_df.rename(columns=rename_map)
+            electrodes_df.to_csv(
+                os.path.join(base_output, f"sub-{subject_label}", "ses-phaseII", f"sub-{subject_label}_electrodes.tsv"),
+                sep='\t', index=False
+            )
+            print("Converted electrodes.csv to electrodes.tsv")
         except Exception as e:
             print(f"Failed electrodes.csv conversion: {e}")
     else:
@@ -155,4 +198,4 @@ def process_subject(subject_folder):
 for subject in subjects:
     process_subject(subject)
 
-print("\nAll subjects processed with chunked EDF export and cleaned signals.")
+print("\nAll subjects processed with EAR (LEAR/REAR) channels only.")

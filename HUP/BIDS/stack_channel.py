@@ -21,7 +21,8 @@ subjects = [
     "HUP271_phaseII",
     "HUP272_phaseII",
     "HUP273_phaseII",
-    "HUP273c_phaseII"
+    "HUP273c_phaseII",
+    "HUP297_phaseII"
 ]
 
 fs = 1024  # Hz

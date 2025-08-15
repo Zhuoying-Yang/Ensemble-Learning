@@ -145,7 +145,7 @@ def process_subject(subject_folder):
         raw_sub_chunk = raw.copy().crop(tmin=start / fs, tmax=(stop - 1) / fs)
         edf_name = f"sub-{subject_label}_ses-phaseII_task-phaseII_run-{idx+1:02d}_eeg.edf"
         edf_path = os.path.join(output_path, edf_name)
-        raw_sub_chunk.export(edf_path, fmt='edf')
+        raw_sub_chunk.export(edf_path, fmt='edf', overwrite=True)
         print(f"Exported {edf_name} [{start}–{stop}] samples")
         scans.append({"filename": f"eeg/{edf_name}", "acq_time": "n/a"})
 

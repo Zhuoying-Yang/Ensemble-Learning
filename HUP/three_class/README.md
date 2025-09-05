@@ -48,12 +48,6 @@ python decision_tree.py
 # 5. Train deep models (CNN / ResNet / RNN)
 python train_each_class.py
 
-# 6. (Optional) Grid search ensemble weights
-python grid_each_class.py
-
-# 7. Build final ensemble (weighted fusion)
-python train.py
-
 # Alternatives to train.py:
 python train_focal.py    # Focal loss ensemble
 python train_meta.py     # Meta-learning ensemble

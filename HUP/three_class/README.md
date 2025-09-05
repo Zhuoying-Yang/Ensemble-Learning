@@ -32,14 +32,31 @@ Two-stage pipeline for 3-class EEG classification on the HUP dataset:
 ---
 ## Typical run order (end-to-end)
 
-1) **Create splits (4 training versions)**
-python process.py
+```bash
+# 1. Create splits (4 training versions)
 python save_data.py
-2) **Standardize by train statistics**
+
+# 2. Standardize by train statistics
 python standardize.py
-3) **Prepare DT features**
+
+# 3. Prepare Decision Tree features (optional)
 python process_feature.py
-5) **Train Decision Tree filter**
+
+# 4. Train Decision Tree filter
 python decision_tree.py
-7) **Train deep models (CNN/ResNet/RNN)**
+
+# 5. Train deep models (CNN / ResNet / RNN)
 python train_each_class.py
+
+# 6. (Optional) Grid search ensemble weights
+python grid_each_class.py
+
+# 7. Build final ensemble (weighted fusion)
+python train.py
+
+# Alternatives to train.py:
+python train_focal.py    # Focal loss ensemble
+python train_meta.py     # Meta-learning ensemble
+python train_thresh.py   # Threshold-tuned ensemble
+python train_vote.py     # Voting ensemble
+

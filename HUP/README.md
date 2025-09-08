@@ -20,6 +20,25 @@ Ensemble of CNN, ResNet, and RNN on 2-class EEG classification on the HUP datase
 - `trainable_model_weight.py` — Train CNN, Resnet, Transformer using extracted features, and ensemble the models using trained ensemble optimization.
 - `training.py` — Train CNN, Resnet, RNN using extracted features, and ensemble the models using grid optimization.
 
+---
+## Typical run order (end-to-end)
+
+```bash
+# 1. Process data
+python process_raw.py
+
+# 2. Create splits (4 training versions)
+python save_data.py
+
+# 3. Standardize by train statistics
+python standardize.py
+
+# 4. Train deep models (CNN / ResNet / RNN)
+python train_with_saved_dataset.py
+
+
+
+
 # HUP / three_class — Seizure Detection Ensemble
 
 Two-stage pipeline for 3-class EEG classification on the HUP dataset:

@@ -1,3 +1,28 @@
+# HUP — EEG Seizure Detection with Ensemble Learning
+
+## Overview
+
+This folder contains research code for developing and evaluating ensemble learning
+pipelines for EEG seizure detection on the HUP dataset.  
+The primary focus of this work is **pipeline design, model ensembling strategies,
+and experimental comparison across architectures**, rather than a single finalized model.
+
+---
+
+## Project Structure
+
+This folder is organized around two related classification tasks:
+
+- **two_class/** — Binary seizure vs non-seizure classification  
+- **three_class/** — Three-class classification (non-seizure / seizure / preictal)
+
+Shared components:
+- **models/** — Trained deep learning models and checkpoints
+- **BIDS/** — Dataset organization and metadata handling
+- **Debug/** — Debugging and experimental scripts
+
+---
+
 # HUP / two_class — Seizure Detection Ensemble
 Ensemble of CNN, ResNet, and RNN on 2-class EEG classification on the HUP dataset:
 > **Dependencies**: add a `requirements.txt` later. 
